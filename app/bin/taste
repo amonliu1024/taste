@@ -1,0 +1,9 @@
+#!/bin/zsh
+set -euo pipefail
+
+APP_DIR="${0:A:h:h}"
+if [[ ! -f "$APP_DIR/dist-node/cli/index.js" || ! -f "$APP_DIR/dist/index.html" ]]; then
+  cd "$APP_DIR"
+  pnpm build
+fi
+exec node "$APP_DIR/dist-node/cli/index.js" "$@"

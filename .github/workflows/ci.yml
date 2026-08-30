@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/setup@v2
+        with:
+          package-json-file: app/package.json
+          cache: true
+          cache-dependency-path: app/pnpm-lock.yaml
+          runtime: node@^22.13.0
+          install: false
+      - run: pnpm install --frozen-lockfile
+        working-directory: app
+      - run: pnpm test
+        working-directory: app

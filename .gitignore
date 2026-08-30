@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+app/dist/
+
+# TypeScript cache
+*.tsbuildinfo
+app/vite.config.js
+app/vite.config.d.ts
+
+# Local runtime data
+data/
+assets/
+outputs/
+.taste/
+
+# Server build output
+app/dist-node/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
