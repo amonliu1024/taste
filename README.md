@@ -2,11 +2,13 @@
 
 <img src="app/public/taste-icon-original.png" alt="Taste icon" width="112">
 
-Taste 是一个运行在 macOS 本机的个人视觉内容库。它把散落的图片和单体 HTML 收进统一 Runtime，让你可以浏览、分组、备注、打标签、搜索，并在无限画布上整理视觉参考。
+Taste 是一个本机、单人、Agent 友好的视觉内容库。
 
-浏览器与 CLI 使用同一套本地数据和文件生命周期规则，因此“把这些参考图放进同一组并加上标签”既可以手动完成，也可以交给 Agent。所有数据默认留在本机；服务只监听回环地址，不提供账号、云同步或多设备访问。
+视觉参考天生留不住：截图散在 `截屏2026-08-25 10.32.15.png` 里，好看的页面存成一堆孤立 HTML，收藏夹里的东西三个月后自己也想不起当初为什么存。找不回来，更没法让 Agent 帮你找。
 
-当前稳定版本为 `1.0.0`。Taste 已适合单人日常使用，但没有内置备份；永久清空废纸篓前，请确保重要素材已有系统级备份。
+Taste 把图片和单体 HTML 收进统一 Runtime：用极简素材墙浏览，用无限画布查看和整理内容组，标题、备注、标签、素材归属和画布布局全是真实持久化数据——不是浏览器缓存，也不是一份会飘的 JSON。同一套数据有一个完整的 CLI，所以「帮我把这半年攒的仪表盘参考归到一组、加上标签」是一句话能交出去的活。
+
+本机自用，日常可用。服务与 Vite 只监听回环地址，局域网、登录、同步和多设备访问都不在当前产品边界内；Taste 也不提供内置备份，永久清空废纸篓前请确保重要素材已有系统级备份。
 
 ## 主要能力
 
@@ -29,23 +31,11 @@ Taste 使用 macOS 的 `sips` 生成图片预览，并使用系统浏览器入�
 ## 安装与启动
 
 ```bash
-cd app
-pnpm install --frozen-lockfile
-pnpm build
-cd ..
+cd app && pnpm install --frozen-lockfile && pnpm build && cd ..
 ./Start\ Taste.command
 ```
 
-启动脚本会启动或复用 `127.0.0.1:4178` 上的本地服务，并打开默认浏览器。正式数据默认写入 `~/.local/share/taste`；可以用 `TASTE_HOME` 指定其他 Runtime。
-
-也可以直接使用项目内 CLI：
-
-```bash
-app/bin/taste help
-app/bin/taste start --open
-app/bin/taste status
-app/bin/taste stop
-```
+启动脚本会启动或复用 `127.0.0.1:4178` 上的本地服务，并打开默认浏览器。正式数据默认写入 `~/.local/share/taste`；也可以用项目内 CLI 直接操作（`app/bin/taste help`）。
 
 需要全局命令时，把 `app/bin/taste` 链接到 `PATH` 中的目录即可。
 
@@ -77,11 +67,7 @@ pnpm test
 
 `pnpm test` 会先生成生产构建，再使用临时 `TASTE_HOME` 验证存储状态机、HTTP 接口和 CLI 安全边界，不会读取或修改正式 Runtime。
 
-实现结构与安全边界见 [Architecture](ARCHITECTURE.md)，版本变化见 [CHANGELOG](CHANGELOG.md)。
-
-## 当前边界
-
-Taste 刻意不提供图片识别、OCR、语义搜索、自动分类、文件监听、云同步、账号协作、移动端适配或内置备份。HTML 素材可以运行自身脚本，只在隔离的 iframe 中按需交互。
+实现结构与安全边界见 [Architecture](ARCHITECTURE.md)，版本变化见 [CHANGELOG](CHANGELOG.md)。项目级产品规则与设计标准见外层 [Project Workspace](../README.md)。
 
 ## License
 
