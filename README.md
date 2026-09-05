@@ -77,7 +77,7 @@ pnpm test
 
 `pnpm test` 会先生成生产构建，再使用临时 `TASTE_HOME` 验证存储状态机、HTTP 接口和 CLI 安全边界，不会读取或修改正式 Runtime。
 
-实现结构与安全边界见 [Architecture](docs/architecture.md)，版本变化见 [CHANGELOG](CHANGELOG.md)。
+实现结构与安全边界见 [Architecture](ARCHITECTURE.md)，版本变化见 [CHANGELOG](CHANGELOG.md)。
 
 ## 当前边界
 
