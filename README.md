@@ -55,6 +55,12 @@ taste trash empty --permanently
 
 CLI 导入默认移动源文件；需要保留原文件时必须传入 `--copy`。浏览器上传始终复制，不会删除你选择的原文件。SQLite 和 Runtime 内部路径不是公共接口。
 
+## 架构与技术栈
+
+只监听回环地址的本机应用。React 页面和 `taste` CLI 走同一个 HTTP 服务，SQLite 与 Runtime 文件不是公共接口——CLI 除启动、停止和状态查询外的所有命令都调本地 HTTP，因此两个入口永远看到同一份状态。
+
+`app/server/http.ts` 负责路由、请求校验和回环边界，`app/server/library.ts` 是内容组、素材、排序、布局与文件生命周期的唯一技术 Owner，`app/server/preview.ts` 用 macOS `sips` 生成图片预览并在可用时调本机 Chrome 截 HTML，`app/server/runtime.ts` 解析并创建仓库外的 Runtime 目录。模块关系见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+
 ## 开发与验证
 
 所有 pnpm 命令从 `app/` 执行：
@@ -67,7 +73,13 @@ pnpm test
 
 `pnpm test` 会先生成生产构建，再使用临时 `TASTE_HOME` 验证存储状态机、HTTP 接口和 CLI 安全边界，不会读取或修改正式 Runtime。
 
-实现结构与安全边界见 [Architecture](ARCHITECTURE.md)，版本变化见 [CHANGELOG](CHANGELOG.md)。项目级产品规则与设计标准见外层 [Project Workspace](../README.md)。
+## 仓库结构
+
+- [app/src/](app/src/)：素材墙、内容组与无限画布前端
+- [app/server/](app/server/)：本地服务、SQLite 存储与文件生命周期
+- [app/cli/](app/cli/)、[app/bin/taste](app/bin/taste)：与浏览器同能力的 CLI 实现与入口
+- [ARCHITECTURE.md](ARCHITECTURE.md)：实现结构与安全边界
+- [CHANGELOG.md](CHANGELOG.md)：版本变化
 
 ## License
 
