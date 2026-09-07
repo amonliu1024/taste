@@ -347,7 +347,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <a className="wordmark" href="/" aria-label="Taste 首页"><img src="/taste-mark.svg" alt="" /></a>
+        <a className="wordmark" href="/" aria-label="Taste 首页"><img src="/taste-mark.svg?v=2" alt="" /></a>
         <div className="search-wrap">
           <SearchIcon />
           <input id="library-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索备注或标签" autoComplete="off" />

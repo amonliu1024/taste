@@ -1,6 +1,6 @@
 # Taste
 
-<img src="app/public/taste-icon-original.png" alt="Taste icon" width="112">
+<img src="app/public/taste-icon.png" alt="Taste icon" width="112">
 
 Taste 是一个本机、单人、Agent 友好的视觉内容库。
 
