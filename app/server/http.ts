@@ -199,6 +199,12 @@ export function createTasteHttpServer(options: { home?: string; webRoot?: string
         }
         return;
       }
+      const assetCropMatch = match(path, /^\/api\/assets\/([^/]+)\/crop$/);
+      if (method === "POST" && assetCropMatch) {
+        const input = await body(request);
+        json(response, 200, { asset: store.setAssetCrop(assetCropMatch[1], input.enabled !== false) });
+        return;
+      }
       const assetActionMatch = match(path, /^\/api\/assets\/([^/]+)\/(trash|restore)$/);
       if (method === "POST" && assetActionMatch) {
         json(response, 200, { asset: assetActionMatch[2] === "trash" ? store.trashAsset(assetActionMatch[1]) : store.restoreAsset(assetActionMatch[1]) });

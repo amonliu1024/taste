@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { createPreview, readImageDimensions } from "./preview.js";
+import { createPreview, detectContentCrop, readImageDimensions, type CropBox } from "./preview.js";
 import { exportAssetFile, exportAssetFilesToDirectory } from "./export.js";
 import { ensureRuntime, getRuntimePaths, type RuntimePaths } from "./runtime.js";
 
@@ -34,6 +34,8 @@ export interface AssetRecord {
   sha256: string;
   width: number | null;
   height: number | null;
+  // 自动检测出的内容区域（原图像素坐标）；null 表示按整张图显示。
+  crop: CropBox | null;
   x: number;
   y: number;
   canvasWidth: number;
@@ -77,6 +79,7 @@ interface PreparedAsset {
   finalPreview: string | null;
   width: number | null;
   height: number | null;
+  crop: CropBox | null;
   x: number;
   y: number;
   canvasWidth: number;
@@ -171,6 +174,11 @@ export class LibraryStore {
       CREATE INDEX IF NOT EXISTS idx_assets_item_state ON assets(item_id, state);
       CREATE INDEX IF NOT EXISTS idx_assets_state_updated ON assets(state, updated_at DESC);
     `);
+    const assetColumns = this.db.prepare("PRAGMA table_info(assets)").all() as DbRow[];
+    if (!assetColumns.some((column) => String(column.name) === "crop_x")) {
+      for (const column of ["crop_x", "crop_y", "crop_width", "crop_height"]) this.db.exec(`ALTER TABLE assets ADD COLUMN ${column} INTEGER`);
+      this.db.exec("ALTER TABLE assets ADD COLUMN crop_disabled INTEGER NOT NULL DEFAULT 0");
+    }
     const itemColumns = this.db.prepare("PRAGMA table_info(items)").all() as DbRow[];
     if (!itemColumns.some((column) => String(column.name) === "title")) {
       this.db.exec("ALTER TABLE items ADD COLUMN title TEXT NOT NULL DEFAULT ''");
@@ -365,6 +373,34 @@ export class LibraryStore {
       UPDATE assets SET x = ?, y = ?, canvas_width = ?, canvas_height = ?, updated_at = ? WHERE id = ?
     `).run(layout.x, layout.y, width, height, now(), assetId);
     return this.getAsset(assetId);
+  }
+
+  // 自动去边的唯一写入口：enabled 时重新检测并保存裁切框，否则记住用户选择显示原图。
+  // 显示比例变化后保持画布宽度与位置，只按新比例修正高度，避免图片在画布上被拉伸或留白。
+  setAssetCrop(assetId: string, enabled: boolean): AssetRecord {
+    const asset = this.getAsset(assetId);
+    if (asset.kind !== "image") throw new Error("只有图片素材可以自动去边。 ");
+    const row = this.db.prepare("SELECT storage_path FROM assets WHERE id = ?").get(assetId) as DbRow;
+    const dimensions = asset.width && asset.height ? { width: asset.width, height: asset.height } : null;
+    const crop = enabled ? detectContentCrop(String(row.storage_path), dimensions, join(this.paths.incoming, `${assetId}-crop`)) : null;
+    const display = crop ?? dimensions;
+    const canvasHeight = display
+      ? Math.max(90, Math.min(MAX_CANVAS_SIZE, asset.canvasWidth * display.height / display.width))
+      : asset.canvasHeight;
+    this.db.prepare(`
+      UPDATE assets SET crop_x = ?, crop_y = ?, crop_width = ?, crop_height = ?, crop_disabled = ?, canvas_height = ?, updated_at = ? WHERE id = ?
+    `).run(crop?.x ?? null, crop?.y ?? null, crop?.width ?? null, crop?.height ?? null, enabled ? 0 : 1, canvasHeight, now(), assetId);
+    return this.getAsset(assetId);
+  }
+
+  // 为未被用户关闭去边的图片重新检测裁切框，供 `taste regenerate-previews` 批量补算。
+  refreshCrops(): { checked: number; cropped: number } {
+    const rows = this.db.prepare("SELECT id FROM assets WHERE kind = 'image' AND crop_disabled = 0 AND state != 'trash'").all() as DbRow[];
+    let cropped = 0;
+    for (const row of rows) {
+      if (this.setAssetCrop(String(row.id), true).crop) cropped += 1;
+    }
+    return { checked: rows.length, cropped };
   }
 
   moveAsset(assetId: string, targetItemId: string | null): AssetRecord {
@@ -582,11 +618,12 @@ export class LibraryStore {
           this.db.prepare(`
             INSERT INTO assets (
               id, item_id, previous_item_id, name, kind, state, storage_path, preview_path,
-              size, sha256, width, height, x, y, canvas_width, canvas_height, created_at, updated_at
-            ) VALUES (?, ?, NULL, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              size, sha256, width, height, crop_x, crop_y, crop_width, crop_height, x, y, canvas_width, canvas_height, created_at, updated_at
+            ) VALUES (?, ?, NULL, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(
             asset.id, itemId, asset.source.name, asset.kind, asset.finalFile, asset.finalPreview,
-            asset.size, asset.sha256, asset.width, asset.height, asset.x, asset.y,
+            asset.size, asset.sha256, asset.width, asset.height,
+            asset.crop?.x ?? null, asset.crop?.y ?? null, asset.crop?.width ?? null, asset.crop?.height ?? null, asset.x, asset.y,
             asset.canvasWidth, asset.canvasHeight, timestamp, timestamp,
           );
         }
@@ -631,12 +668,12 @@ export class LibraryStore {
       throw new Error(`复制校验失败：${source.name}`);
     }
     const dimensions = kind === "image" ? readImageDimensions(incomingFile) : { width: 1440, height: 900 };
-    const aspect = dimensions ? dimensions.width / dimensions.height : 4 / 3;
-    const canvasWidth = 420;
-    const canvasHeight = Math.max(180, Math.min(720, canvasWidth / aspect));
-    const position = initialPosition(index);
     // 预览可能是 .png 或 .jpg，扩展名由 createPreview 根据源文件决定。
     const previewBase = join(this.paths.incoming, `${id}-preview`);
+    const crop = kind === "image" ? detectContentCrop(incomingFile, dimensions, previewBase) : null;
+    const canvasWidth = 420;
+    const canvasHeight = canvasHeightFor(canvasWidth, crop ?? dimensions);
+    const position = initialPosition(index);
     const createdPreview = createPreview(kind, incomingFile, previewBase, dimensions);
     const finalDir = join(this.paths.files, id);
     return {
@@ -652,6 +689,7 @@ export class LibraryStore {
       finalPreview: createdPreview ? join(this.paths.previews, `${id}${extname(createdPreview)}`) : null,
       width: dimensions?.width ?? null,
       height: dimensions?.height ?? null,
+      crop,
       x: position.x,
       y: position.y,
       canvasWidth,
@@ -692,6 +730,9 @@ export class LibraryStore {
       sha256: String(row.sha256),
       width: row.width === null ? null : Number(row.width),
       height: row.height === null ? null : Number(row.height),
+      crop: row.crop_width == null || row.crop_height == null ? null : {
+        x: Number(row.crop_x), y: Number(row.crop_y), width: Number(row.crop_width), height: Number(row.crop_height),
+      },
       x: Number(row.x),
       y: Number(row.y),
       canvasWidth: Number(row.canvas_width),
@@ -746,6 +787,12 @@ export class LibraryStore {
     }
   }
 
+}
+
+// 新素材默认 420 宽，高度随显示比例（有裁切时按裁切后的比例）。
+export function canvasHeightFor(canvasWidth: number, size: { width: number; height: number } | null): number {
+  const aspect = size ? size.width / size.height : 4 / 3;
+  return Math.max(180, Math.min(720, canvasWidth / aspect));
 }
 
 function initialPosition(index: number): { x: number; y: number } {

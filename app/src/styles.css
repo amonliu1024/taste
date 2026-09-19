@@ -112,7 +112,10 @@ input:focus-visible, textarea:focus-visible { border-color: var(--focus); box-sh
 .library-card-open { width: 100%; display: block; padding: 0; border: 0; background: transparent; text-align: left; }
 .library-card-open > img { width: 100%; height: auto; display: block; transition: opacity 180ms ease; }
 .html-placeholder { min-height: 208px; display: grid; place-items: center; background: #e8e8e5; color: #777; font-size: 12px; letter-spacing: .12em; }
+.library-card-open > .crop-frame { width: 100%; transition: opacity 180ms ease; }
 .library-card:hover .library-card-open > img { opacity: 0.92; }
+.library-card:hover .library-card-open > .crop-frame { opacity: 0.92; }
+.library-card.suppress-hover .library-card-open > .crop-frame { opacity: 1; }
 .library-card.suppress-hover .library-card-open > img { opacity: 1; }
 .library-card.is-dragging { z-index: 8; opacity: .94; width: var(--drag-tile-size); height: var(--drag-tile-size); box-shadow: 0 16px 36px rgba(27,27,24,.2); cursor: grabbing; animation: drag-lift 160ms cubic-bezier(.2, .8, .2, 1); }
 .library-card.is-dragging .library-card-open, .library-card.is-dragging .library-card-open > img { width: 100%; height: 100%; }
@@ -236,6 +239,14 @@ input:focus-visible, textarea:focus-visible { border-color: var(--focus); box-sh
 .node-media > img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; object-fit: contain; background: #f7f7f5; }
 .node-media > img.node-original { background: transparent; opacity: 0; transition: opacity 120ms ease; }
 .node-media > img.node-original.is-ready { opacity: 1; }
+/* 自动去边：外框按裁切区域取景，内部图片按百分比偏移，预览与原图共用同一裁切框。 */
+.crop-frame { position: relative; display: block; overflow: hidden; }
+.crop-frame > img { position: absolute; display: block; max-width: none; }
+.library-card.is-dragging .library-card-open > .crop-frame { height: 100%; }
+.node-media:has(> .crop-frame) { container-type: size; }
+.node-media > .crop-frame { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: #f7f7f5; }
+.node-media > .crop-frame.node-original { background: transparent; opacity: 0; transition: opacity 120ms ease; }
+.node-media > .crop-frame.node-original.is-ready { opacity: 1; }
 .canvas-html-placeholder { width: 100%; height: 100%; display: grid; place-items: center; align-content: center; gap: var(--space-2); background: #f7f7f5; color: #777; }
 .canvas-html-placeholder span { font-size: 14px; letter-spacing: .12em; }
 .canvas-html-placeholder small { max-width: 80%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }

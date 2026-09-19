@@ -12,6 +12,8 @@ export interface AssetRecord {
   sha256: string;
   width: number | null;
   height: number | null;
+  // 自动检测出的内容区域（原图像素坐标）；null 表示按整张图显示。
+  crop: { x: number; y: number; width: number; height: number } | null;
   x: number;
   y: number;
   canvasWidth: number;

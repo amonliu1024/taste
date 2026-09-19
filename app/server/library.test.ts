@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { LibraryStore } from "./library.js";
 
@@ -253,6 +254,64 @@ test("asset movement, item trash and permanent empty follow one state machine", 
     const result = f.store.emptyTrash("DELETE");
     assert.deepEqual(result, { deletedItems: 1, deletedAssets: 2 });
     assert.equal(f.store.listTrash().items.length, 0);
+  } finally {
+    f.close();
+  }
+});
+
+type Box = { x: number; y: number; width: number; height: number };
+const within = (box: Box) => (x: number, y: number) => x >= box.x && x < box.x + box.width && y >= box.y && y < box.y + box.height;
+
+// 写一张 24 位 BMP 再用 sips 转成 PNG：content 覆盖的像素用 fill 色，其余是 border 色。
+function writeFramedPng(path: string, size: { width: number; height: number }, content: Box | ((x: number, y: number) => boolean), border: number[], fill: number[]) {
+  const inside = typeof content === "function" ? content : within(content);
+  const stride = Math.ceil((size.width * 3) / 4) * 4;
+  const data = Buffer.alloc(54 + stride * size.height);
+  data.write("BM", 0, "latin1");
+  data.writeUInt32LE(data.length, 2);
+  data.writeUInt32LE(54, 10);
+  data.writeUInt32LE(40, 14);
+  data.writeInt32LE(size.width, 18);
+  data.writeInt32LE(-size.height, 22);
+  data.writeUInt16LE(1, 26);
+  data.writeUInt16LE(24, 28);
+  for (let y = 0; y < size.height; y += 1) {
+    for (let x = 0; x < size.width; x += 1) {
+      const [r, g, b] = inside(x, y) ? fill : border;
+      data.set([b, g, r], 54 + y * stride + x * 3);
+    }
+  }
+  const bmp = `${path}.bmp`;
+  writeFileSync(bmp, data);
+  assert.equal(spawnSync("/usr/bin/sips", ["-s", "format", "png", bmp, "--out", path]).status, 0);
+}
+
+test("colored borders are cropped for display while full-bleed images stay whole", () => {
+  const f = fixture();
+  try {
+    const framed = join(f.root, "framed.png");
+    writeFramedPng(framed, { width: 400, height: 300 }, { x: 40, y: 30, width: 300, height: 150 }, [230, 40, 90], [20, 20, 20]);
+    const asset = f.store.importPaths([framed], { mode: "copy" }).assets[0];
+    assert.deepEqual(asset.crop, { x: 40, y: 30, width: 300, height: 150 });
+    assert.equal(asset.width, 400);
+    assert.equal(Math.round(asset.canvasWidth / asset.canvasHeight), 2);
+
+    const bleed = join(f.root, "bleed.png");
+    writeFramedPng(bleed, { width: 400, height: 300 }, { x: 0, y: 0, width: 400, height: 300 }, [255, 255, 255], [20, 120, 200]);
+    assert.equal(f.store.importPaths([bleed], { mode: "copy" }).assets[0].crop, null);
+
+    // 同底色上的零散内容（十字：外框边上大多仍是底色）回留约 3% 长边的呼吸边距；实心色块则贴边裁。
+    const sparse = join(f.root, "sparse.png");
+    const bar = (x: number, y: number) => within({ x: 150, y: 145, width: 100, height: 10 })(x, y) || within({ x: 195, y: 120, width: 10, height: 60 })(x, y);
+    writeFramedPng(sparse, { width: 400, height: 300 }, bar, [255, 255, 255], [20, 20, 20]);
+    assert.deepEqual(f.store.importPaths([sparse], { mode: "copy" }).assets[0].crop, { x: 138, y: 108, width: 124, height: 84 });
+
+    const off = f.store.setAssetCrop(asset.id, false);
+    assert.equal(off.crop, null);
+    assert.equal(Math.round((off.canvasWidth / off.canvasHeight) * 3), 4);
+    f.store.refreshCrops();
+    assert.equal(f.store.getAsset(asset.id).crop, null);
+    assert.deepEqual(f.store.setAssetCrop(asset.id, true).crop, asset.crop);
   } finally {
     f.close();
   }

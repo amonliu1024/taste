@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { getRuntimePaths, ensureRuntime } from "../server/runtime.js";
 import { createPreview, readImageDimensions } from "../server/preview.js";
 import { assertStopTarget } from "./safety.js";
+import { LibraryStore } from "../server/library.js";
 
 const PORT = Number(process.env.TASTE_PORT ?? 4178);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -92,7 +93,7 @@ async function stop(): Promise<void> {
   console.log("Taste 已停止。");
 }
 
-// 用当前预览生成逻辑重新生成所有图片素材的预览图，并更新数据库中的 preview_path。
+// 用当前预览生成逻辑重新生成所有图片素材的预览图，并更新数据库中的 preview_path，再补算自动去边裁切框。
 // HTML 素材的预览由 Chromium 截图生成，此命令不动它们（之前的预览规则未变）。
 async function regeneratePreviews(): Promise<void> {
   const paths = getRuntimePaths();
@@ -123,7 +124,12 @@ async function regeneratePreviews(): Promise<void> {
     regenerated += 1;
     unchanged.push(`${row.id.slice(0, 8)} → ${extname(created)}`);
   }
-  output({ total: rows.length, regenerated, dimensionsBackfilled, failed, sample: unchanged.slice(0, 5) });
+  db.close();
+  // 预览与尺寸就绪后统一补算自动去边的裁切框（用户关闭过去边的素材保持原样）。
+  const store = new LibraryStore();
+  const crops = store.refreshCrops();
+  store.close();
+  output({ total: rows.length, regenerated, dimensionsBackfilled, failed, crops, sample: unchanged.slice(0, 5) });
 }
 
 function output(payload: unknown): void {
@@ -142,6 +148,7 @@ function help(): never {
   taste asset add <item-id> <paths...> [--copy]
   taste asset move <asset-id> <item-id|staged>
   taste asset trash|restore <asset-id>
+  taste asset crop <asset-id> auto|off
   taste layout <asset-id> --x <n> --y <n> --width <n> --height <n>
   taste item front <item-id>
   taste item before <item-id> <target-item-id>
@@ -218,6 +225,9 @@ async function main(): Promise<void> {
     }
     if (action === "move") return output(await request(`/api/assets/${first}`, { method: "PATCH", body: JSON.stringify({ targetItemId: rest[0] === "staged" ? null : rest[0] }) }));
     if (["trash", "restore"].includes(action)) return output(await request(`/api/assets/${first}/${action}`, { method: "POST", body: "{}" }));
+    if (action === "crop" && ["auto", "off"].includes(rest[0])) {
+      return output(await request(`/api/assets/${first}/crop`, { method: "POST", body: JSON.stringify({ enabled: rest[0] === "auto" }) }));
+    }
   }
   throw new Error("未知命令。运行 taste help 查看用法。");
 }

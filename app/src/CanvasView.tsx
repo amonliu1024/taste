@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { api } from "./api";
 import ConfirmPopover from "./ConfirmPopover";
 import { AddMaterialIcon, AddStagedIcon, ArrowIcon, CloseIcon, EmptyStagedIcon, ExportIcon, FitIcon, HtmlIcon, MoveIcon, TrashIcon, TrayIcon } from "./Icons";
+import { CroppedImage, displaySize } from "./media";
 import SelectMenu from "./SelectMenu";
 import type { AssetRecord, ItemRecord } from "./types";
 
@@ -37,11 +38,13 @@ function isNearViewport(asset: AssetRecord, viewport: Viewport, margin = 240): b
     && screenY < window.innerHeight + margin;
 }
 
-// 预览图的实际像素宽度：服务端只在长边超过 PREVIEW_CAP 时才等比压缩，小图保持原分辨率。
+// 预览图覆盖显示区域的像素宽度：服务端只在长边超过 PREVIEW_CAP 时才等比压缩，小图保持原分辨率；
+// 有去边裁切时只算裁切区域那一段。
 function previewPixelWidth(asset: AssetRecord): number {
   if (!asset.width || !asset.height) return PREVIEW_CAP;
   const maxDimension = Math.max(asset.width, asset.height);
-  return maxDimension > PREVIEW_CAP ? (asset.width * PREVIEW_CAP) / maxDimension : asset.width;
+  const scale = maxDimension > PREVIEW_CAP ? PREVIEW_CAP / maxDimension : 1;
+  return (asset.crop?.width ?? asset.width) * scale;
 }
 
 // 按需加载原图：素材总量可能几百 MB，绝不能把所有原图同时拉进画布。
@@ -68,15 +71,17 @@ function imageClipboardType(name: string): string | null {
   } as Record<string, string>)[extension] ?? null;
 }
 
-async function imageAsPng(source: Blob): Promise<Blob> {
+// 转成同分辨率 PNG；有去边裁切框时只保留裁切区域，与画布上看到的一致。
+async function imageAsPng(source: Blob, crop: AssetRecord["crop"] = null): Promise<Blob> {
   const bitmap = await createImageBitmap(source);
   try {
+    const region = crop ?? { x: 0, y: 0, width: bitmap.width, height: bitmap.height };
     const canvas = document.createElement("canvas");
-    canvas.width = bitmap.width;
-    canvas.height = bitmap.height;
+    canvas.width = region.width;
+    canvas.height = region.height;
     const context = canvas.getContext("2d");
     if (!context) throw new Error("浏览器无法转换这张图片。 ");
-    context.drawImage(bitmap, 0, 0);
+    context.drawImage(bitmap, region.x, region.y, region.width, region.height, 0, 0, region.width, region.height);
     return await new Promise<Blob>((resolve, reject) => {
       canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("浏览器无法转换这张图片。 ")), "image/png");
     });
@@ -682,7 +687,7 @@ export default function CanvasView({ item, allItems, onBack, onChange, onLibrary
     copyingRef.current = true;
     try {
       const sourceType = imageClipboardType(asset.name);
-      const canWriteOriginal = Boolean(sourceType && (typeof ClipboardItem.supports !== "function"
+      const canWriteOriginal = !asset.crop && Boolean(sourceType && (typeof ClipboardItem.supports !== "function"
         ? sourceType === "image/png"
         : ClipboardItem.supports(sourceType)));
       const original = fetch(asset.originalUrl).then(async (response) => {
@@ -690,10 +695,10 @@ export default function CanvasView({ item, allItems, onBack, onChange, onLibrary
         return response.blob();
       });
       const targetType = canWriteOriginal && sourceType ? sourceType : "image/png";
-      const content = canWriteOriginal ? original : original.then(imageAsPng);
+      const content = canWriteOriginal ? original : original.then((blob) => imageAsPng(blob, asset.crop));
       // 立即发起 write，让异步原图读取仍归属于这次 Command+C 用户操作。
       await navigator.clipboard.write([new ClipboardItem({ [targetType]: content })]);
-      onSuccess(canWriteOriginal ? "已复制原图" : "已复制原始分辨率图片");
+      onSuccess(canWriteOriginal ? "已复制原图" : asset.crop ? "已复制去边后的图片" : "已复制原始分辨率图片");
     } catch (error) {
       onError(error instanceof Error ? error.message : "复制图片失败。 ");
     } finally {
@@ -717,11 +722,12 @@ export default function CanvasView({ item, allItems, onBack, onChange, onLibrary
     }
   }
 
-  // 双击图片在“原始像素尺寸”和上一次的画布尺寸之间切换；原图长边超过画布上限时等比缩到上限。
+  // 双击图片在“原始像素尺寸”（有去边裁切时为裁切区域）和上一次的画布尺寸之间切换；长边超过画布上限时等比缩到上限。
   function toggleNaturalSize(asset: AssetRecord) {
-    if (asset.kind !== "image" || !asset.width || !asset.height) return;
-    const ratio = Math.min(1, MAX_CANVAS_SIZE / Math.max(asset.width, asset.height));
-    const natural = { width: Math.max(MIN_CANVAS_WIDTH, asset.width * ratio), height: Math.max(MIN_CANVAS_HEIGHT, asset.height * ratio) };
+    const size = displaySize(asset);
+    if (asset.kind !== "image" || !size) return;
+    const ratio = Math.min(1, MAX_CANVAS_SIZE / Math.max(size.width, size.height));
+    const natural = { width: Math.max(MIN_CANVAS_WIDTH, size.width * ratio), height: Math.max(MIN_CANVAS_HEIGHT, size.height * ratio) };
     const atNatural = Math.abs(asset.canvasWidth - natural.width) < 1 && Math.abs(asset.canvasHeight - natural.height) < 1;
     if (atNatural) {
       const previous = previousSizeRef.current.get(asset.id);
@@ -855,9 +861,11 @@ export default function CanvasView({ item, allItems, onBack, onChange, onLibrary
                 <div className="canvas-html-placeholder"><span>HTML</span><small>{asset.name}</small></div>
               ) : (
                 <div className="node-media">
-                  <img src={asset.previewUrl} alt={asset.name} draggable={false} />
+                  <CroppedImage asset={asset} fit="contain" src={asset.previewUrl} alt={asset.name} draggable={false} />
                   {wantsOriginal(asset, viewport, loadedOriginals.has(asset.id)) && (
-                    <img
+                    <CroppedImage
+                      asset={asset}
+                      fit="contain"
                       className={`node-original ${loadedOriginals.has(asset.id) ? "is-ready" : ""}`}
                       src={asset.originalUrl}
                       alt=""

@@ -3,6 +3,7 @@ import { api } from "./api";
 import CanvasView from "./CanvasView";
 import ConfirmPopover from "./ConfirmPopover";
 import { CloseIcon, EmptyItemIcon, FrontIcon, HtmlIcon, MoveIcon, PlusIcon, RestoreIcon, SearchIcon, TrashIcon, TrayIcon } from "./Icons";
+import { CroppedImage, displaySize } from "./media";
 import SelectMenu from "./SelectMenu";
 import type { AssetRecord, ItemRecord, TrashRecord } from "./types";
 
@@ -436,8 +437,9 @@ function MasonryWall({ items, draggedItemId, dragPosition, onOpen, onFront, onPr
     for (const item of items) {
       const column = bottoms.reduce((best, value, index) => value < bottoms[best] ? index : best, 0);
       const cover = item.assets[0];
-      const naturalWidth = cover?.width ?? cover?.canvasWidth ?? 0;
-      const naturalHeight = cover?.height ?? cover?.canvasHeight ?? 0;
+      const coverSize = cover ? displaySize(cover) : null;
+      const naturalWidth = coverSize?.width ?? cover?.canvasWidth ?? 0;
+      const naturalHeight = coverSize?.height ?? cover?.canvasHeight ?? 0;
       const cardHeight = cover && naturalWidth > 0 && naturalHeight > 0
         ? Math.round(columnWidth * naturalHeight / naturalWidth)
         : 208;
@@ -498,7 +500,7 @@ function LibraryCard({ item, style, isDragging, dragPosition, onOpen, onFront, o
           <span className="empty-card"><PlusIcon /><span>{item.title}</span></span>
         ) : cover.kind === "html" && !cover.hasPreview
           ? <span className="html-placeholder">HTML</span>
-          : <img src={cover.previewUrl} alt="" loading="lazy" draggable={false} />}
+          : <CroppedImage asset={cover} fit="block" src={cover.previewUrl} alt="" loading="lazy" draggable={false} />}
       </button>
       <span className="card-order-actions">
         <button onClick={(event) => { event.currentTarget.blur(); setSuppressHover(true); onFront(); }} aria-label={`将${item.title}移到最前`} title="移到最前"><FrontIcon /></button>

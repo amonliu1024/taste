@@ -49,6 +49,7 @@ taste import ./a.png ./b.png --title "同一组参考" --tag UI
 taste import ./demo.html --copy
 taste update <item-id> --title "新标题" --tags "UI,仪表盘"
 taste asset move <asset-id> <item-id|staged>
+taste asset crop <asset-id> off
 taste layout <asset-id> --x 10 --y 20 --width 420 --height 300
 taste trash empty --permanently
 ```

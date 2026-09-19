@@ -14,7 +14,7 @@ CLI ─────┘                    └────────── Runt
 - `app/cli/`：除启动、停止和状态查询外，所有命令都调用本地 HTTP 服务。
 - `app/server/http.ts`：路由、请求校验和回环地址安全边界。
 - `app/server/library.ts`：内容组、素材、排序、布局和文件生命周期的唯一技术 Owner。
-- `app/server/preview.ts`：使用 macOS `sips` 生成图片预览，并在可用时使用本机 Chrome/Chromium 生成 HTML 截图。
+- `app/server/preview.ts`：使用 macOS `sips` 生成图片预览、检测截图纯色边框得到自动去边裁切框，并在可用时使用本机 Chrome/Chromium 生成 HTML 截图。裁切框由 `library.ts` 的 `setAssetCrop` 统一写入，前端 `app/src/media.tsx` 统一按裁切框显示预览与原图。
 - `app/server/runtime.ts`：解析并创建仓库外的 Runtime 目录。
 
 ## Runtime
