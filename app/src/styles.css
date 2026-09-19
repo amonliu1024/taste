@@ -1,7 +1,7 @@
 :root {
   font-family: "Anthropic Serif Text", "Iowan Old Style", "Times New Roman", serif;
   color: #1b1b1a;
-  background: #f6f6f4;
+  background: #eeede9;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --space-1: 4px;
@@ -12,7 +12,7 @@
   --space-6: 24px;
   --space-8: 32px;
   --space-10: 40px;
-  --bg: #f6f6f4;
+  --bg: #eeede9;
   --surface: rgba(255, 255, 255, 0.96);
   --surface-muted: #eeeeeb;
   --text: #1b1b1a;
@@ -50,7 +50,7 @@ input:focus-visible, textarea:focus-visible { border-color: var(--focus); box-sh
   align-items: center;
   gap: var(--space-6);
   padding: 0 var(--space-8);
-  background: rgba(246, 246, 244, 0.88);
+  background: rgba(238, 237, 233, 0.88);
   backdrop-filter: blur(20px);
 }
 .wordmark {
@@ -95,6 +95,26 @@ input:focus-visible, textarea:focus-visible { border-color: var(--focus); box-sh
 .danger-icon, .danger-icon:hover, .danger-icon.is-active { color: var(--danger); }
 
 .library-main { padding: var(--space-6) var(--space-8) 72px; }
+/* 形态目录：一行安静的文字索引，当前项用正文色，其余退为次要色，不做按钮底色。 */
+.form-index {
+  position: sticky;
+  top: 72px;
+  z-index: 19;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-5);
+  margin: calc(-1 * var(--space-6)) calc(-1 * var(--space-8)) var(--space-4);
+  padding: var(--space-2) var(--space-8) var(--space-4);
+  background: rgba(238, 237, 233, 0.88);
+  backdrop-filter: blur(20px);
+}
+.form-index button { padding: 0; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 15px; letter-spacing: 0.01em; cursor: pointer; transition: color 140ms ease; }
+.form-index button:hover { color: var(--text); }
+.form-index button.is-active { color: var(--text); font-weight: 500; }
+.form-index button.is-active span { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 6px; }
+.form-index sup { margin-left: 2px; font-size: 10px; font-variant-numeric: tabular-nums; color: #aaa9a4; vertical-align: super; }
+.form-index button.is-active sup { color: var(--muted); }
 .masonry { position: relative; width: 100%; }
 .library-card {
   position: absolute;
@@ -109,7 +129,9 @@ input:focus-visible, textarea:focus-visible { border-color: var(--focus); box-sh
   user-select: none;
   transition: opacity 160ms ease, scale 180ms cubic-bezier(.2,.8,.2,1), box-shadow 180ms ease, width 200ms ease, height 200ms ease;
 }
-.library-card-open { width: 100%; display: block; padding: 0; border: 0; background: transparent; text-align: left; }
+.library-card-open { position: relative; width: 100%; display: block; padding: 0; border: 0; background: transparent; text-align: left; }
+/* 1px 淡内描线压在素材上：深色图上几乎不可见，只给白底截图补一道边缘。 */
+.library-card-open::after { content: ""; position: absolute; inset: 0; box-shadow: inset 0 0 0 1px rgba(27, 27, 26, 0.08); pointer-events: none; }
 .library-card-open > img { width: 100%; height: auto; display: block; transition: opacity 180ms ease; }
 .html-placeholder { min-height: 208px; display: grid; place-items: center; background: #e8e8e5; color: #777; font-size: 12px; letter-spacing: .12em; }
 .library-card-open > .crop-frame { width: 100%; transition: opacity 180ms ease; }
@@ -139,7 +161,7 @@ input:focus-visible, textarea:focus-visible { border-color: var(--focus); box-sh
 }
 .library-card:hover .card-caption, .library-card:focus-within .card-caption { opacity: 1; transform: translateY(0); }
 .library-card.suppress-hover .card-caption { opacity: 0; transform: translateY(var(--space-1)); }
-.skeleton-wall { columns: 5 232px; column-gap: var(--space-4); height: auto !important; }
+.skeleton-wall { columns: 5 280px; column-gap: var(--space-4); height: auto !important; }
 .skeleton-card { width: 100%; display: inline-block; margin: 0 0 var(--space-4); break-inside: avoid; background: linear-gradient(100deg, #e9e9e6 20%, #f2f2ef 38%, #e9e9e6 56%); background-size: 220% 100%; animation: skeleton-shift 1.1s ease-in-out infinite; }
 .card-caption span {
   display: inline-flex;

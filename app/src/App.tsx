@@ -32,6 +32,8 @@ interface GroupPress {
 export default function App() {
   const [items, setItems] = useState<ItemRecord[]>([]);
   const [query, setQuery] = useState("");
+  const [form, setForm] = useState<string | null>(null);
+  const visibleItems = useMemo(() => (form ? items.filter((item) => item.tags.includes(form)) : items), [items, form]);
   const [selected, setSelected] = useState<ItemRecord | null>(null);
   const [drawer, setDrawer] = useState<Drawer>(null);
   const [importOpen, setImportOpen] = useState(false);
@@ -275,7 +277,7 @@ export default function App() {
   }, [cancelCardAnimations, finishGroupPress]);
 
   function beginGroupPress(event: ReactPointerEvent<HTMLElement>, itemId: string) {
-    if (query || event.button !== 0 || (event.target as HTMLElement).closest(".card-order-actions")) return;
+    if (query || form || event.button !== 0 || (event.target as HTMLElement).closest(".card-order-actions")) return;
     const masonryEl = document.querySelector<HTMLElement>(".masonry");
     const masonryRect = masonryEl?.getBoundingClientRect();
     const press: GroupPress = {
@@ -362,16 +364,17 @@ export default function App() {
       </header>
 
       <main className="library-main">
+        {!loading && <FormIndex items={items} active={form} onSelect={setForm} />}
         {loading ? (
           <LibrarySkeleton />
-        ) : items.length === 0 ? (
+        ) : visibleItems.length === 0 ? (
           <div className="quiet-state">
-            <span>{query ? "没有匹配的内容" : "内容库还是空的"}</span>
-            {!query && <button onClick={() => setImportOpen(true)}>新建第一个内容组</button>}
+            <span>{query || form ? "没有匹配的内容" : "内容库还是空的"}</span>
+            {!query && !form && <button onClick={() => setImportOpen(true)}>新建第一个内容组</button>}
           </div>
         ) : (
           <MasonryWall
-            items={items}
+            items={visibleItems}
             draggedItemId={draggedItemId}
             dragPosition={dragPosition}
             onOpen={openItem}
@@ -387,6 +390,30 @@ export default function App() {
       {importOpen && <ImportDialog onClose={() => setImportOpen(false)} onImported={(item) => { setImportOpen(false); load(); enterDetail(item); }} onError={showError} />}
       {toast && <div className={`toast ${toast.kind === "success" ? "is-success" : ""}`} role={toast.kind === "error" ? "alert" : "status"}>{toast.text}</div>}
     </div>
+  );
+}
+
+// 形态是内容组的一级分类，与 taste-import Skill 的形态表保持同一份词汇和顺序。
+const FORMS = ["网页", "App", "软件界面", "仪表盘", "组件", "图解", "演示", "海报", "插画", "字体", "图标", "摄影", "工业设计", "实物素材"];
+
+// 瀑布流上方的一行文字目录：按形态筛选当前结果，只列出有内容的形态，与搜索叠加生效。
+function FormIndex({ items, active, onSelect }: { items: ItemRecord[]; active: string | null; onSelect: (form: string | null) => void }) {
+  const counts = FORMS.map((name) => ({ name, count: items.filter((item) => item.tags.includes(name)).length })).filter((entry) => entry.count > 0);
+  if (counts.length === 0) return null;
+  const entries = [{ name: null as string | null, label: "全部", count: items.length }, ...counts.map((entry) => ({ ...entry, label: entry.name }))];
+  return (
+    <nav className="form-index" aria-label="按形态浏览">
+      {entries.map((entry) => (
+        <button
+          key={entry.label}
+          className={active === entry.name ? "is-active" : ""}
+          aria-pressed={active === entry.name}
+          onClick={() => onSelect(active === entry.name ? null : entry.name)}
+        >
+          <span>{entry.label}</span><sup>{entry.count}</sup>
+        </button>
+      ))}
+    </nav>
   );
 }
 
@@ -427,7 +454,7 @@ function MasonryWall({ items, draggedItemId, dragPosition, onOpen, onFront, onPr
     if (!wallWidth) return { height: 0, placements: new Map<string, CSSProperties>() };
     const compact = wallWidth <= 756;
     const gap = compact ? 8 : 16;
-    const minimumWidth = compact ? 140 : 232;
+    const minimumWidth = compact ? 140 : 280;
     const maximumColumns = compact ? 2 : 5;
     const columnCount = Math.max(1, Math.min(maximumColumns, Math.floor((wallWidth + gap) / (minimumWidth + gap))));
     const columnWidth = (wallWidth - gap * (columnCount - 1)) / columnCount;
