@@ -57,6 +57,14 @@ taste trash empty --permanently
 
 CLI 导入默认移动源文件；需要保留原文件时必须传入 `--copy`。浏览器上传始终复制，不会删除你选择的原文件。SQLite 和 Runtime 内部路径不是公共接口。
 
+### 让 Agent 导入
+
+[skills/taste-import/](skills/taste-import/SKILL.md) 是配套的 Agent Skill，规定 Agent 导入或整理素材时如何命名、分组、打形态标签和记录来源。把它链接到 Agent 的 Skill 目录即可随仓库更新：
+
+```bash
+ln -s "$PWD/skills/taste-import" ~/.claude/skills/taste-import
+```
+
 ## 架构与技术栈
 
 只监听回环地址的本机应用。React 页面和 `taste` CLI 走同一个 HTTP 服务，SQLite 与 Runtime 文件不是公共接口——CLI 除启动、停止和状态查询外的所有命令都调本地 HTTP，因此两个入口永远看到同一份状态。
@@ -80,6 +88,7 @@ pnpm test
 - [app/src/](app/src/)：素材墙、内容组与无限画布前端
 - [app/server/](app/server/)：本地服务、SQLite 存储与文件生命周期
 - [app/cli/](app/cli/)、[app/bin/taste](app/bin/taste)：与浏览器同能力的 CLI 实现与入口
+- [skills/](skills/)：配套的 Agent Skill
 - [ARCHITECTURE.md](ARCHITECTURE.md)：实现结构与安全边界
 - [CHANGELOG.md](CHANGELOG.md)：版本变化
 
