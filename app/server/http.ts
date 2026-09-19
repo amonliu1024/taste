@@ -223,6 +223,10 @@ export function createTasteHttpServer(options: { home?: string; webRoot?: string
         json(response, 200, store.exportAsset(exportMatch[1], targetPath));
         return;
       }
+      if (method === "GET" && path === "/api/tags") {
+        json(response, 200, { tags: store.listTags() });
+        return;
+      }
       if (method === "GET" && path === "/api/staged") {
         json(response, 200, { assets: store.listStaged() });
         return;

@@ -316,3 +316,23 @@ test("colored borders are cropped for display while full-bleed images stay whole
     f.close();
   }
 });
+
+test("HEIC imports are stored as JPEG and tag usage is listed for reuse", () => {
+  const f = fixture();
+  try {
+    const png = join(f.root, "photo.png");
+    writeFramedPng(png, { width: 64, height: 48 }, { x: 0, y: 0, width: 64, height: 48 }, [0, 0, 0], [200, 90, 40]);
+    const heic = join(f.root, "photo.heic");
+    assert.equal(spawnSync("/usr/bin/sips", ["-s", "format", "heic", png, "--out", heic]).status, 0);
+    const item = f.store.importPaths([heic], { mode: "copy", tags: ["摄影", "暖色"] });
+    assert.equal(item.title, "photo");
+    assert.equal(item.assets[0].name, "photo.jpg");
+    assert.equal(item.assets[0].width, 64);
+    assert.throws(() => f.store.importPaths([heic], { mode: "copy" }), /重复文件已存在/);
+    writeFileSync(f.source, PNG_A);
+    f.store.importPaths([f.source], { mode: "copy", tags: ["摄影"] });
+    assert.deepEqual(f.store.listTags(), [{ name: "摄影", count: 2 }, { name: "暖色", count: 1 }]);
+  } finally {
+    f.close();
+  }
+});

@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { createPreview, detectContentCrop, readImageDimensions, type CropBox } from "./preview.js";
+import { convertToJpeg, createPreview, detectContentCrop, readImageDimensions, type CropBox } from "./preview.js";
 import { exportAssetFile, exportAssetFilesToDirectory } from "./export.js";
 import { ensureRuntime, getRuntimePaths, type RuntimePaths } from "./runtime.js";
 
@@ -90,6 +90,8 @@ type DbRow = Record<string, unknown>;
 
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"]);
 const HTML_EXTENSIONS = new Set([".html", ".htm"]);
+// 导入时转成 JPEG 再保存的格式；去重仍按来源文件哈希判断。
+const CONVERT_EXTENSIONS = new Set([".heic", ".heif"]);
 
 function now(): string {
   return new Date().toISOString();
@@ -102,7 +104,7 @@ function cleanName(name: string): string {
 
 function kindFor(name: string): AssetKind {
   const extension = extname(name).toLowerCase();
-  if (IMAGE_EXTENSIONS.has(extension)) return "image";
+  if (IMAGE_EXTENSIONS.has(extension) || CONVERT_EXTENSIONS.has(extension)) return "image";
   if (HTML_EXTENSIONS.has(extension)) return "html";
   throw new Error(`不支持的文件：${name}。Taste 只接收图片和单体 HTML。`);
 }
@@ -231,6 +233,15 @@ export class LibraryStore {
     const row = this.db.prepare("SELECT * FROM items WHERE id = ?").get(id) as DbRow | undefined;
     if (!row) throw new Error("内容组不存在。 ");
     return this.hydrateItem(row);
+  }
+
+  // 当前内容组正在使用的标签及使用次数，供 Agent 导入时复用既有词汇。
+  listTags(): Array<{ name: string; count: number }> {
+    return (this.db.prepare(`
+      SELECT item_tags.tag_name AS name, COUNT(*) AS count FROM item_tags
+      JOIN items ON items.id = item_tags.item_id AND items.state = 'active'
+      GROUP BY item_tags.tag_name ORDER BY count DESC, name COLLATE NOCASE
+    `).all() as DbRow[]).map((row) => ({ name: String(row.name), count: Number(row.count) }));
   }
 
   listStaged(): AssetRecord[] {
@@ -660,12 +671,21 @@ export class LibraryStore {
   private prepareAsset(source: ImportSource, index: number): PreparedAsset {
     const id = randomUUID();
     const kind = kindFor(source.name);
-    const incomingFile = join(this.paths.incoming, `${id}-${source.name}`);
+    let incomingFile = join(this.paths.incoming, `${id}-${source.name}`);
     copyFileSync(source.path, incomingFile);
     const sourceHash = sha256(source.path);
     if (sha256(incomingFile) !== sourceHash) {
       rmSync(incomingFile, { force: true });
       throw new Error(`复制校验失败：${source.name}`);
+    }
+    let storedName = source.name;
+    if (CONVERT_EXTENSIONS.has(extname(source.name).toLowerCase())) {
+      storedName = `${basename(source.name, extname(source.name))}.jpg`;
+      const converted = join(this.paths.incoming, `${id}-${storedName}`);
+      const ok = convertToJpeg(incomingFile, converted);
+      rmSync(incomingFile, { force: true });
+      if (!ok) throw new Error(`图片格式转换失败：${source.name}`);
+      incomingFile = converted;
     }
     const dimensions = kind === "image" ? readImageDimensions(incomingFile) : { width: 1440, height: 900 };
     // 预览可能是 .png 或 .jpg，扩展名由 createPreview 根据源文件决定。
@@ -678,7 +698,7 @@ export class LibraryStore {
     const finalDir = join(this.paths.files, id);
     return {
       id,
-      source,
+      source: { ...source, name: storedName },
       kind,
       sha256: sourceHash,
       size: statSync(incomingFile).size,

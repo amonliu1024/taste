@@ -47,6 +47,7 @@ taste search "编辑感"
 taste create --title "待补素材" --note "稍后整理" --tag 待整理
 taste import ./a.png ./b.png --title "同一组参考" --tag UI
 taste import ./demo.html --copy
+taste tags
 taste update <item-id> --title "新标题" --tags "UI,仪表盘"
 taste asset move <asset-id> <item-id|staged>
 taste asset crop <asset-id> off

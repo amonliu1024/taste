@@ -141,7 +141,7 @@ function help(): never {
 
   taste start [--open]
   taste stop | status
-  taste list | search <query> | show <item-id>
+  taste list | search <query> | show <item-id> | tags
   taste create [--title <text>] [--note <text>] [--tag <tag>...]
   taste import <paths...> [--copy] [--title <text>] [--note <text>] [--tag <tag>...]
   taste update <item-id> [--title <text>] [--note <text>] [--tags <a,b>]
@@ -199,6 +199,7 @@ async function main(): Promise<void> {
     x: Number(value(args, "--x")), y: Number(value(args, "--y")), width: Number(value(args, "--width")), height: Number(value(args, "--height")),
   }) }));
   if (command === "staged") return output(await request("/api/staged"));
+  if (command === "tags") return output(await request("/api/tags"));
   if (command === "trash" && args[0] === "empty") {
     if (!args.includes("--permanently")) throw new Error("永久清空必须传入 --permanently。");
     return output(await request("/api/trash/empty", { method: "POST", body: JSON.stringify({ confirm: "DELETE" }) }));

@@ -174,6 +174,11 @@ export function detectContentCrop(source: string, dimensions: Dimensions | null,
   }
 }
 
+// 浏览器无法直接显示的图片格式（如 iPhone 的 HEIC）在导入时转成 JPEG 保存。
+export function convertToJpeg(source: string, destination: string): boolean {
+  return run(["-s", "format", "jpeg", "-s", "formatOptions", "92", source, "--out", destination]) && existsSync(destination);
+}
+
 function run(args: string[]): boolean {
   const result = spawnSync("/usr/bin/sips", args, { encoding: "utf8" });
   return result.status === 0;
