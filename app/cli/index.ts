@@ -147,6 +147,7 @@ function help(): never {
   taste update <item-id> [--title <text>] [--note <text>] [--tags <a,b>]
   taste asset add <item-id> <paths...> [--copy]
   taste asset move <asset-id> <item-id|staged>
+  taste asset rename <asset-id> <name>
   taste asset trash|restore <asset-id>
   taste asset crop <asset-id> auto|off
   taste layout <asset-id> --x <n> --y <n> --width <n> --height <n>
@@ -225,6 +226,7 @@ async function main(): Promise<void> {
       }) }));
     }
     if (action === "move") return output(await request(`/api/assets/${first}`, { method: "PATCH", body: JSON.stringify({ targetItemId: rest[0] === "staged" ? null : rest[0] }) }));
+    if (action === "rename" && rest[0]) return output(await request(`/api/assets/${first}`, { method: "PATCH", body: JSON.stringify({ name: rest.join(" ") }) }));
     if (["trash", "restore"].includes(action)) return output(await request(`/api/assets/${first}/${action}`, { method: "POST", body: "{}" }));
     if (action === "crop" && ["auto", "off"].includes(rest[0])) {
       return output(await request(`/api/assets/${first}/crop`, { method: "POST", body: JSON.stringify({ enabled: rest[0] === "auto" }) }));

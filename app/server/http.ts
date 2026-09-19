@@ -193,6 +193,8 @@ export function createTasteHttpServer(options: { home?: string; webRoot?: string
           json(response, 200, { asset: store.updateLayout(assetMatch[1], {
             x: Number(input.x), y: Number(input.y), width: Number(input.width), height: Number(input.height),
           }) });
+        } else if (typeof input.name === "string") {
+          json(response, 200, { asset: store.renameAsset(assetMatch[1], input.name) });
         } else {
           const target = input.targetItemId === null || input.targetItemId === "staged" ? null : String(input.targetItemId ?? "");
           json(response, 200, { asset: store.moveAsset(assetMatch[1], target || null) });

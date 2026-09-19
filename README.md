@@ -50,6 +50,7 @@ taste import ./demo.html --copy
 taste tags
 taste update <item-id> --title "新标题" --tags "UI,仪表盘"
 taste asset move <asset-id> <item-id|staged>
+taste asset rename <asset-id> "新名称"
 taste asset crop <asset-id> off
 taste layout <asset-id> --x 10 --y 20 --width 420 --height 300
 taste trash empty --permanently

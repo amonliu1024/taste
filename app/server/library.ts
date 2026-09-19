@@ -386,6 +386,17 @@ export class LibraryStore {
     return this.getAsset(assetId);
   }
 
+  // 素材名是显示与导出用名，真实格式由原扩展名决定：新名称写不写扩展名，都接回原扩展名保存。
+  renameAsset(assetId: string, name: string): AssetRecord {
+    const asset = this.getAsset(assetId);
+    const extension = extname(asset.name);
+    let stem = basename(name).replace(/[\u0000-\u001f]/g, "").trim();
+    if (extension && stem.toLowerCase().endsWith(extension.toLowerCase())) stem = stem.slice(0, -extension.length).trim();
+    if (!stem) throw new Error("素材名称不能为空。 ");
+    this.db.prepare("UPDATE assets SET name = ?, updated_at = ? WHERE id = ?").run(`${stem}${extension}`, now(), assetId);
+    return this.getAsset(assetId);
+  }
+
   // 自动去边的唯一写入口：enabled 时重新检测并保存裁切框，否则记住用户选择显示原图。
   // 显示比例变化后保持画布宽度与位置，只按新比例修正高度，避免图片在画布上被拉伸或留白。
   setAssetCrop(assetId: string, enabled: boolean): AssetRecord {

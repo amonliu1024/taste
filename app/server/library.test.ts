@@ -336,3 +336,18 @@ test("HEIC imports are stored as JPEG and tag usage is listed for reuse", () => 
     f.close();
   }
 });
+
+test("renaming an asset keeps its real extension and rejects an empty name", () => {
+  const f = fixture();
+  try {
+    writeFileSync(f.source, PNG_A);
+    const asset = f.store.importPaths([f.source], { mode: "copy" }).assets[0];
+    assert.equal(f.store.renameAsset(asset.id, "海报·新名称").name, "海报·新名称.png");
+    assert.equal(f.store.renameAsset(asset.id, "海报·再改.PNG").name, "海报·再改.png");
+    assert.equal(f.store.renameAsset(asset.id, "版本1.2").name, "版本1.2.png");
+    assert.throws(() => f.store.renameAsset(asset.id, "  "), /不能为空/);
+    assert.throws(() => f.store.renameAsset(asset.id, ".png"), /不能为空/);
+  } finally {
+    f.close();
+  }
+});
