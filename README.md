@@ -60,11 +60,13 @@ CLI 导入默认移动源文件；需要保留原文件时必须传入 `--copy`�
 
 ### 让 Agent 导入
 
-[skills/taste-import/](skills/taste-import/SKILL.md) 是配套的 Agent Skill，规定 Agent 导入或整理素材时如何命名、分组、打形态标签和记录来源。把它链接到 Agent 的 Skill 目录即可随仓库更新：
+[skills/taste-import/](skills/taste-import/SKILL.md) 是配套的 Agent Skill，规定 Agent 导入或整理素材时如何命名、分组、打形态标签和记录来源。修改后运行部署脚本，把 `skills/` 下的全部 Skill 同步到 cc-switch（`~/.cc-switch/skills`）和 SmartWork（`~/.SmartWork/skills`），目标目录中仓库已删除的文件会一并清理：
 
 ```bash
-ln -s "$PWD/skills/taste-import" ~/.claude/skills/taste-import
+scripts/deploy-skills.sh
 ```
+
+首次部署后在 cc-switch 中导入该 Skill 并为 Claude Code 启用。
 
 ## 架构与技术栈
 
@@ -89,7 +91,7 @@ pnpm test
 - [app/src/](app/src/)：素材墙、内容组与无限画布前端
 - [app/server/](app/server/)：本地服务、SQLite 存储与文件生命周期
 - [app/cli/](app/cli/)、[app/bin/taste](app/bin/taste)：与浏览器同能力的 CLI 实现与入口
-- [skills/](skills/)：配套的 Agent Skill
+- [skills/](skills/)、[scripts/deploy-skills.sh](scripts/deploy-skills.sh)：配套的 Agent Skill 与部署脚本
 - [ARCHITECTURE.md](ARCHITECTURE.md)：实现结构与安全边界
 - [CHANGELOG.md](CHANGELOG.md)：版本变化
 
