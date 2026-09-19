@@ -8,6 +8,7 @@ import { getRuntimePaths, ensureRuntime } from "../server/runtime.js";
 import { createPreview, readImageDimensions } from "../server/preview.js";
 import { assertStopTarget } from "./safety.js";
 import { LibraryStore } from "../server/library.js";
+import { startServer } from "../server/index.js";
 
 const PORT = Number(process.env.TASTE_PORT ?? 4178);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -81,6 +82,23 @@ async function start(openBrowser: boolean): Promise<void> {
   console.log(BASE);
 }
 
+// 在当前终端前台运行服务并打开浏览器，Ctrl+C 或关闭终端即停止；已有服务在跑时只打开浏览器。
+async function serve(): Promise<void> {
+  const paths = ensureRuntime(getRuntimePaths());
+  const current = await health();
+  if (current && current.home !== paths.home) {
+    throw new Error(`端口 ${PORT} 已由另一个 Taste Runtime 使用：${current.home}`);
+  }
+  if (current) {
+    spawnSync("/usr/bin/open", [BASE]);
+    console.log(`Taste 已在运行（PID ${current.pid}）：${BASE}，用 taste stop 停止。`);
+    return;
+  }
+  await startServer();
+  spawnSync("/usr/bin/open", [BASE]);
+  console.log("按 Ctrl+C 停止。");
+}
+
 async function stop(): Promise<void> {
   const paths = getRuntimePaths();
   if (!existsSync(paths.serverInfo)) {
@@ -139,7 +157,8 @@ function output(payload: unknown): void {
 function help(): never {
   console.log(`Taste CLI
 
-  taste start [--open]
+  taste                     前台运行并打开浏览器，Ctrl+C 停止
+  taste start [--open]      后台运行
   taste stop | status
   taste list | search <query> | show <item-id> | tags
   taste create [--title <text>] [--note <text>] [--tag <tag>...]
@@ -164,7 +183,8 @@ function help(): never {
 
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
-  if (!command || command === "help" || command === "--help") help();
+  if (!command) return serve();
+  if (command === "help" || command === "--help") help();
   if (command === "start") return start(args.includes("--open"));
   if (command === "stop") return stop();
   if (command === "status") {

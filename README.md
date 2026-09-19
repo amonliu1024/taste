@@ -32,12 +32,11 @@ Taste 使用 macOS 的 `sips` 生成图片预览，并使用系统浏览器入�
 
 ```bash
 cd app && pnpm install --frozen-lockfile && pnpm build && cd ..
-./Start\ Taste.command
+ln -s "$PWD/app/bin/taste" ~/.local/bin/taste   # 任选一个 PATH 中的目录
+taste
 ```
 
-启动脚本会启动或复用 `127.0.0.1:4178` 上的本地服务，并打开默认浏览器。正式数据默认写入 `~/.local/share/taste`；也可以用项目内 CLI 直接操作（`app/bin/taste help`）。
-
-需要全局命令时，把 `app/bin/taste` 链接到 `PATH` 中的目录即可。
+不带参数的 `taste` 在当前终端前台运行 `127.0.0.1:4178` 上的本地服务并打开默认浏览器，按 Ctrl+C 或关闭终端即停止；服务已在运行时只打开浏览器。需要常驻后台时用 `taste start [--open]`，再用 `taste stop` 停止；其它 CLI 命令在服务未运行时也会自动在后台启动它。正式数据默认写入 `~/.local/share/taste`，完整命令见 `taste help`。
 
 ## 典型用法
 

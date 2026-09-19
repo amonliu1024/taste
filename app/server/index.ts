@@ -16,6 +16,7 @@ export async function startServer(): Promise<void> {
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
+  process.on("SIGHUP", shutdown);
   console.log(`Taste listening on http://127.0.0.1:${address.port}`);
 }
 
