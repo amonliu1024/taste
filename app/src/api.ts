@@ -1,4 +1,4 @@
-import type { AssetRecord, ItemRecord, TrashRecord } from "./types";
+import type { AssetRecord, FormRecord, ItemRecord, TrashRecord } from "./types";
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
@@ -13,6 +13,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 export const api = {
   async items(query = ""): Promise<ItemRecord[]> {
     return (await request<{ items: ItemRecord[] }>(`/api/items?q=${encodeURIComponent(query)}`)).items;
+  },
+  async forms(): Promise<FormRecord[]> {
+    return (await request<{ forms: FormRecord[] }>("/api/forms")).forms;
   },
   async item(id: string): Promise<ItemRecord> {
     return (await request<{ item: ItemRecord }>(`/api/items/${id}`)).item;

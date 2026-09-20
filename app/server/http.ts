@@ -229,6 +229,20 @@ export function createTasteHttpServer(options: { home?: string; webRoot?: string
         json(response, 200, { tags: store.listTags() });
         return;
       }
+      if (method === "GET" && path === "/api/forms") {
+        json(response, 200, { forms: store.listForms() });
+        return;
+      }
+      if (method === "POST" && path === "/api/forms") {
+        const input = await body(request);
+        json(response, 201, { forms: store.addForm(String(input.name ?? ""), String(input.description ?? "")) });
+        return;
+      }
+      const formMatch = match(path, /^\/api\/forms\/([^/]+)$/);
+      if (method === "DELETE" && formMatch) {
+        json(response, 200, { forms: store.removeForm(formMatch[1]) });
+        return;
+      }
       if (method === "GET" && path === "/api/staged") {
         json(response, 200, { assets: store.listStaged() });
         return;

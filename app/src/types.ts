@@ -38,6 +38,12 @@ export interface ItemRecord {
   updatedAt: string;
 }
 
+export interface FormRecord {
+  name: string;
+  description: string;
+  count: number;
+}
+
 export interface TrashRecord {
   items: ItemRecord[];
   assets: AssetRecord[];

@@ -85,3 +85,40 @@ test("HTTP uses the store contract and blocks cross-origin writes", async () => 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("HTTP manages the forms list", async () => {
+  const root = mkdtempSync(join(tmpdir(), "taste-http-"));
+  const server = createTasteHttpServer({ home: join(root, "runtime"), webRoot: join(root, "web") });
+  const address = await server.listen(0);
+  const base = `http://127.0.0.1:${address.port}`;
+  try {
+    const listed = await (await fetch(`${base}/api/forms`)).json() as { forms: Array<{ name: string; description: string; count: number }> };
+    assert.equal(listed.forms.length, 14);
+    assert.equal(listed.forms[0].name, "网页");
+
+    const added = await fetch(`${base}/api/forms`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "动效", description: "动效与视频类界面" }),
+    });
+    assert.equal(added.status, 201);
+    assert.equal(((await added.json()) as { forms: unknown[] }).forms.length, 15);
+
+    const duplicate = await fetch(`${base}/api/forms`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "动效" }),
+    });
+    assert.equal(duplicate.status, 400);
+
+    const removed = await fetch(`${base}/api/forms/${encodeURIComponent("动效")}`, { method: "DELETE" });
+    assert.equal(removed.status, 200);
+    assert.equal(((await removed.json()) as { forms: unknown[] }).forms.length, 14);
+
+    const missing = await fetch(`${base}/api/forms/${encodeURIComponent("不存在")}`, { method: "DELETE" });
+    assert.equal(missing.status, 400);
+  } finally {
+    await server.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

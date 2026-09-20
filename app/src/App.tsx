@@ -5,7 +5,7 @@ import ConfirmPopover from "./ConfirmPopover";
 import { CloseIcon, EmptyItemIcon, FrontIcon, HtmlIcon, MoveIcon, PlusIcon, RestoreIcon, SearchIcon, TrashIcon, TrayIcon } from "./Icons";
 import { CroppedImage, displaySize } from "./media";
 import SelectMenu from "./SelectMenu";
-import type { AssetRecord, ItemRecord, TrashRecord } from "./types";
+import type { AssetRecord, FormRecord, ItemRecord, TrashRecord } from "./types";
 
 type Drawer = "staging" | "trash" | null;
 
@@ -31,6 +31,7 @@ interface GroupPress {
 
 export default function App() {
   const [items, setItems] = useState<ItemRecord[]>([]);
+  const [forms, setForms] = useState<FormRecord[]>([]);
   const [query, setQuery] = useState("");
   const [form, setForm] = useState<string | null>(null);
   const visibleItems = useMemo(() => (form ? items.filter((item) => item.tags.includes(form)) : items), [items, form]);
@@ -69,8 +70,11 @@ export default function App() {
     const generation = ++loadGenerationRef.current;
     const startedAt = Date.now();
     try {
-      const next = await api.items(search);
-      if (generation === loadGenerationRef.current) setItems(next);
+      const [next, nextForms] = await Promise.all([api.items(search), api.forms()]);
+      if (generation === loadGenerationRef.current) {
+        setItems(next);
+        setForms(nextForms);
+      }
     } catch (reason) {
       if (generation === loadGenerationRef.current) showError(reason instanceof Error ? reason.message : "无法读取内容库。 ");
     } finally {
@@ -364,7 +368,7 @@ export default function App() {
       </header>
 
       <main className="library-main">
-        {!loading && <FormIndex items={items} active={form} onSelect={setForm} />}
+        {!loading && <FormIndex items={items} forms={forms} active={form} onSelect={setForm} />}
         {loading ? (
           <LibrarySkeleton />
         ) : visibleItems.length === 0 ? (
@@ -393,12 +397,10 @@ export default function App() {
   );
 }
 
-// 形态是内容组的一级分类，与 taste-import Skill 的形态表保持同一份词汇和顺序。
-const FORMS = ["网页", "App", "软件界面", "仪表盘", "组件", "图解", "演示", "海报", "插画", "字体", "图标", "摄影", "工业设计", "实物素材"];
-
-// 瀑布流上方的一行文字目录：按形态筛选当前结果，只列出有内容的形态，与搜索叠加生效。
-function FormIndex({ items, active, onSelect }: { items: ItemRecord[]; active: string | null; onSelect: (form: string | null) => void }) {
-  const counts = FORMS.map((name) => ({ name, count: items.filter((item) => item.tags.includes(name)).length })).filter((entry) => entry.count > 0);
+// 瀑布流上方的一行文字目录：形态清单由服务端维护（taste form add/remove），
+// 计数基于当前搜索结果在本地计算，只列出有内容的形态，与搜索叠加生效。
+function FormIndex({ items, forms, active, onSelect }: { items: ItemRecord[]; forms: FormRecord[]; active: string | null; onSelect: (form: string | null) => void }) {
+  const counts = forms.map((entry) => ({ name: entry.name, count: items.filter((item) => item.tags.includes(entry.name)).length })).filter((entry) => entry.count > 0);
   if (counts.length === 0) return null;
   const entries = [{ name: null as string | null, label: "全部", count: items.length }, ...counts.map((entry) => ({ ...entry, label: entry.name }))];
   return (

@@ -60,6 +60,31 @@ export interface ItemRecord {
   updatedAt: string;
 }
 
+// 形态是内容组的一级分类。清单存库、可增删，Agent 通过 `taste forms` 读取当前词汇。
+export interface FormRecord {
+  name: string;
+  description: string;
+  count: number;
+}
+
+// 首次建库时的默认形态（名称、说明、顺序即首页目录顺序）。
+const DEFAULT_FORMS: Array<[string, string]> = [
+  ["网页", "官网、落地页、作品集、网站内页"],
+  ["App", "手机界面、应用商店截图"],
+  ["软件界面", "桌面或 Web 工具界面：编辑器、聊天工作台、终端、日历应用"],
+  ["仪表盘", "B 端后台、数据看板、管理系统"],
+  ["组件", "单个控件、卡片、菜单、输入框、动效片段"],
+  ["图解", "概念图、信息图、架构图、流程图、学习路线"],
+  ["演示", "PPT、幻灯片、长图演示"],
+  ["海报", "海报、平面版式、折页、壁纸"],
+  ["插画", "插画、角色、抽象画、游戏画面、等距场景"],
+  ["字体", "字体样张、字效、标题字设计"],
+  ["图标", "图标集、符号体系"],
+  ["摄影", "实拍、人像、产品摄影、视频截帧"],
+  ["工业设计", "硬件、实体产品设计"],
+  ["实物素材", "票据、单据、号码牌、包装等实物"],
+];
+
 interface ImportSource {
   path: string;
   name: string;
@@ -133,6 +158,8 @@ export class LibraryStore {
   }
 
   private migrate(): void {
+    // 只在 forms 表首次创建时播种默认形态；用户即使删空清单，重开库也不再回填。
+    const formsTableExists = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'forms'").get();
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS items (
         id TEXT PRIMARY KEY,
@@ -167,6 +194,11 @@ export class LibraryStore {
       CREATE TABLE IF NOT EXISTS tags (
         name TEXT PRIMARY KEY COLLATE NOCASE
       );
+      CREATE TABLE IF NOT EXISTS forms (
+        name TEXT PRIMARY KEY COLLATE NOCASE,
+        description TEXT NOT NULL DEFAULT '',
+        position INTEGER NOT NULL DEFAULT 0
+      );
       CREATE TABLE IF NOT EXISTS item_tags (
         item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
         tag_name TEXT NOT NULL REFERENCES tags(name) ON DELETE CASCADE,
@@ -176,6 +208,10 @@ export class LibraryStore {
       CREATE INDEX IF NOT EXISTS idx_assets_item_state ON assets(item_id, state);
       CREATE INDEX IF NOT EXISTS idx_assets_state_updated ON assets(state, updated_at DESC);
     `);
+    if (!formsTableExists) {
+      const insert = this.db.prepare("INSERT INTO forms (name, description, position) VALUES (?, ?, ?)");
+      DEFAULT_FORMS.forEach(([name, description], index) => insert.run(name, description, index + 1));
+    }
     const assetColumns = this.db.prepare("PRAGMA table_info(assets)").all() as DbRow[];
     if (!assetColumns.some((column) => String(column.name) === "crop_x")) {
       for (const column of ["crop_x", "crop_y", "crop_width", "crop_height"]) this.db.exec(`ALTER TABLE assets ADD COLUMN ${column} INTEGER`);
@@ -242,6 +278,34 @@ export class LibraryStore {
       JOIN items ON items.id = item_tags.item_id AND items.state = 'active'
       GROUP BY item_tags.tag_name ORDER BY count DESC, name COLLATE NOCASE
     `).all() as DbRow[]).map((row) => ({ name: String(row.name), count: Number(row.count) }));
+  }
+
+  // 形态清单按 position 排序，count 统计使用该形态标签的活跃内容组数。
+  listForms(): FormRecord[] {
+    return (this.db.prepare(`
+      SELECT f.name AS name, f.description AS description, (
+        SELECT COUNT(*) FROM item_tags
+        JOIN items ON items.id = item_tags.item_id AND items.state = 'active'
+        WHERE item_tags.tag_name = f.name
+      ) AS count
+      FROM forms f ORDER BY f.position, f.name COLLATE NOCASE
+    `).all() as DbRow[]).map((row) => ({ name: String(row.name), description: String(row.description), count: Number(row.count) }));
+  }
+
+  addForm(name: string, description = ""): FormRecord[] {
+    const trimmed = name.trim();
+    if (!trimmed) throw new Error("形态名称不能为空。 ");
+    if (this.db.prepare("SELECT 1 FROM forms WHERE name = ?").get(trimmed)) throw new Error(`形态「${trimmed}」已存在。 `);
+    const next = this.db.prepare("SELECT COALESCE(MAX(position), 0) + 1 AS next FROM forms").get() as DbRow;
+    this.db.prepare("INSERT INTO forms (name, description, position) VALUES (?, ?, ?)").run(trimmed, description.trim(), Number(next.next));
+    return this.listForms();
+  }
+
+  // 只移出形态清单，不删内容组上的同名标签；需要清理时用 updateItem 改标签。
+  removeForm(name: string): FormRecord[] {
+    const result = this.db.prepare("DELETE FROM forms WHERE name = ?").run(name.trim());
+    if (Number(result.changes) === 0) throw new Error(`形态「${name.trim()}」不存在。 `);
+    return this.listForms();
   }
 
   listStaged(): AssetRecord[] {

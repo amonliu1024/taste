@@ -176,6 +176,9 @@ function help(): never {
   taste item trash|restore <item-id>
   taste staged | trash
   taste trash empty --permanently
+  taste forms                    形态清单（一级分类）、说明与内容组数
+  taste form add <name> [--desc <说明>]
+  taste form remove <name>       只移出清单，不动内容组上的同名标签
   taste regenerate-previews
 `);
   process.exit(0);
@@ -221,6 +224,15 @@ async function main(): Promise<void> {
   }) }));
   if (command === "staged") return output(await request("/api/staged"));
   if (command === "tags") return output(await request("/api/tags"));
+  if (command === "forms") return output(await request("/api/forms"));
+  if (command === "form" && ["add", "remove"].includes(args[0])) {
+    const name = positionals(args.slice(1)).join(" ");
+    if (!name) throw new Error(`用法：taste form ${args[0]} <名称>${args[0] === "add" ? " [--desc <说明>]" : ""}`);
+    if (args[0] === "add") {
+      return output(await request("/api/forms", { method: "POST", body: JSON.stringify({ name, description: value(args, "--desc") ?? "" }) }));
+    }
+    return output(await request(`/api/forms/${encodeURIComponent(name)}`, { method: "DELETE" }));
+  }
   if (command === "trash" && args[0] === "empty") {
     if (!args.includes("--permanently")) throw new Error("永久清空必须传入 --permanently。");
     return output(await request("/api/trash/empty", { method: "POST", body: JSON.stringify({ confirm: "DELETE" }) }));
