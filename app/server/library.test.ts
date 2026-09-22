@@ -56,6 +56,21 @@ test("an empty content item can be created and later receive a file", () => {
   }
 });
 
+test("search matches title, note and tag but not file names", () => {
+  const f = fixture();
+  try {
+    const titled = f.store.createItem("Linear 官网");
+    const noted = f.store.createItem("", "linear 风格的配色");
+    const tagged = f.store.createItem("", "", ["Linear"]);
+    f.store.createItem("其他参考");
+    assert.deepEqual(new Set(f.store.listItems("linear").map((item) => item.id)), new Set([titled.id, noted.id, tagged.id]));
+    assert.deepEqual(f.store.listItems("官网").map((item) => item.id), [titled.id]);
+    assert.deepEqual(f.store.listItems("不存在"), []);
+  } finally {
+    f.close();
+  }
+});
+
 test("content groups can be moved to the front and reordered without metadata updates changing order", () => {
   const f = fixture();
   try {

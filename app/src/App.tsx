@@ -357,7 +357,7 @@ export default function App() {
         <a className="wordmark" href="/" aria-label="Taste 首页"><img src="/taste-mark.svg?v=2" alt="" /></a>
         <div className="search-wrap">
           <SearchIcon />
-          <input id="library-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索备注或标签" autoComplete="off" />
+          <input id="library-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索标题、备注或标签" autoComplete="off" />
           {query && <button className="clear-search" onClick={() => setQuery("")} aria-label="清空搜索"><CloseIcon /></button>}
         </div>
         <div className="top-actions">

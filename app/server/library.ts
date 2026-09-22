@@ -259,9 +259,9 @@ export class LibraryStore {
       SELECT DISTINCT i.* FROM items i
       LEFT JOIN item_tags it ON it.item_id = i.id
       WHERE i.state = ?
-        AND (? = '' OR lower(i.note) LIKE ? OR lower(it.tag_name) LIKE ?)
+        AND (? = '' OR lower(i.title) LIKE ? OR lower(i.note) LIKE ? OR lower(it.tag_name) LIKE ?)
       ORDER BY i.sort_order DESC, i.updated_at DESC
-    `).all(state, needle, `%${needle}%`, `%${needle}%`) as DbRow[];
+    `).all(state, needle, `%${needle}%`, `%${needle}%`, `%${needle}%`) as DbRow[];
     return rows.map((row) => this.hydrateItem(row));
   }
 

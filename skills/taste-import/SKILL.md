@@ -5,7 +5,7 @@ description: 把截图、设计参考图或单体 HTML 收进本机 Taste 视觉
 
 # Taste Import
 
-Taste 是本机、单人的视觉参考库：一个**内容组**是一份参考，组里放同一来源、会被一起看的素材；分类靠标签，搜索只匹配**备注和标签**，不匹配标题和文件名。
+Taste 是本机、单人的视觉参考库：一个**内容组**是一份参考，组里放同一来源、会被一起看的素材；分类靠标签，搜索匹配**标题、备注和标签**，不匹配文件名。
 
 CLI 是本仓库的 `app/bin/taste`（本 Skill 目录上两级；未链接到 PATH 时用完整路径，下文写作 `taste`）。先跑 `taste status`，未运行时 `taste start`。所有写入都走 CLI，不碰 `~/.local/share/taste` 里的文件与 SQLite。
 
