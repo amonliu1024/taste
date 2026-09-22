@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type WheelEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { api } from "./api";
 import ConfirmPopover from "./ConfirmPopover";
 import { AddMaterialIcon, AddStagedIcon, ArrowIcon, CloseIcon, EmptyStagedIcon, ExportIcon, FitIcon, HtmlIcon, MoveIcon, TrashIcon, TrayIcon } from "./Icons";
@@ -331,20 +331,30 @@ export default function CanvasView({ item, allItems, onBack, onChange, onLibrary
     });
   }, []);
 
-  function onWheel(event: WheelEvent<HTMLDivElement>) {
-    const target = event.target as HTMLElement | null;
-    // Wheel inside an open dropdown scrolls its list; only outside wheel resets the selection.
-    if (target?.closest("[data-radix-popper-content-wrapper]")) return;
-    event.preventDefault();
-    if (selectedIds.length > 0 || interactiveId) resetTransientState();
-    zoomAt(event.clientX, event.clientY, event.deltaY);
-  }
+  const hasTransient = selectedIds.length > 0 || interactiveId !== null;
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    // React registers wheel listeners as passive, so preventDefault only works on a native listener.
+    const onStageWheel = (event: globalThis.WheelEvent) => {
+      const target = event.target as HTMLElement | null;
+      // Wheel inside an open dropdown scrolls its list; only outside wheel resets the selection.
+      if (target?.closest("[data-radix-popper-content-wrapper]")) return;
+      event.preventDefault();
+      if (hasTransient) resetTransientState();
+      zoomAt(event.clientX, event.clientY, event.deltaY);
+    };
+    container.addEventListener("wheel", onStageWheel, { passive: false });
+    return () => container.removeEventListener("wheel", onStageWheel);
+  }, [hasTransient, resetTransientState, zoomAt]);
 
   useEffect(() => {
     // An open Radix layer disables pointer events elsewhere, so outside wheel events target
     // <html> and never reach the stage. Handle them here: reset selection (which closes the
     // menu), then zoom — mirroring the stage wheel behavior.
     const onWindowWheel = (event: globalThis.WheelEvent) => {
+      // Trackpad pinch arrives as ctrl+wheel; its default page zoom would also scale the floating panels.
+      if (event.ctrlKey) event.preventDefault();
       if (!document.querySelector("[data-radix-popper-content-wrapper]")) return;
       const target = event.target as HTMLElement | null;
       if (target?.closest("[data-radix-popper-content-wrapper]")) return;
@@ -824,7 +834,6 @@ export default function CanvasView({ item, allItems, onBack, onChange, onLibrary
       <div
         ref={containerRef}
         className="canvas-stage"
-        onWheel={onWheel}
         onPointerDown={beginStage}
         onPointerMove={moveGesture}
         onPointerUp={endGesture}
