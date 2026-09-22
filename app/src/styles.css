@@ -31,7 +31,9 @@
 body[data-scroll-locked] { margin-right: 0 !important; padding-right: 0 !important; }
 .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
 html, body, #root { min-width: 320px; min-height: 100%; margin: 0; }
-body { min-height: 100vh; background: var(--bg); font-size: 14px; }
+body { min-height: 100vh; background: var(--bg); font-size: 14px; -webkit-user-select: none; user-select: none; }
+/* 界面按工具处理，只有输入框可选中文字。 */
+input, textarea { -webkit-user-select: text; user-select: text; }
 button, input, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: 0.45; }

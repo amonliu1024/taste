@@ -331,6 +331,16 @@ export default function CanvasView({ item, allItems, onBack, onChange, onLibrary
     });
   }, []);
 
+  // 与 Figma 一致：双指滑动（及鼠标滚轮）平移画布，捏合（ctrl+wheel）或 ⌘+滚轮缩放。
+  const wheelViewport = useCallback((event: globalThis.WheelEvent) => {
+    const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? (containerRef.current?.clientHeight ?? 800) : 1;
+    if (event.ctrlKey || event.metaKey) {
+      zoomAt(event.clientX, event.clientY, event.deltaY * unit);
+      return;
+    }
+    setViewport((current) => ({ ...current, x: current.x - event.deltaX * unit, y: current.y - event.deltaY * unit }));
+  }, [zoomAt]);
+
   const hasTransient = selectedIds.length > 0 || interactiveId !== null;
   useEffect(() => {
     const container = containerRef.current;
@@ -342,16 +352,16 @@ export default function CanvasView({ item, allItems, onBack, onChange, onLibrary
       if (target?.closest("[data-radix-popper-content-wrapper]")) return;
       event.preventDefault();
       if (hasTransient) resetTransientState();
-      zoomAt(event.clientX, event.clientY, event.deltaY);
+      wheelViewport(event);
     };
     container.addEventListener("wheel", onStageWheel, { passive: false });
     return () => container.removeEventListener("wheel", onStageWheel);
-  }, [hasTransient, resetTransientState, zoomAt]);
+  }, [hasTransient, resetTransientState, wheelViewport]);
 
   useEffect(() => {
     // An open Radix layer disables pointer events elsewhere, so outside wheel events target
     // <html> and never reach the stage. Handle them here: reset selection (which closes the
-    // menu), then zoom — mirroring the stage wheel behavior.
+    // menu), then pan or zoom — mirroring the stage wheel behavior.
     const onWindowWheel = (event: globalThis.WheelEvent) => {
       // Trackpad pinch arrives as ctrl+wheel; its default page zoom would also scale the floating panels.
       if (event.ctrlKey) event.preventDefault();
@@ -360,11 +370,11 @@ export default function CanvasView({ item, allItems, onBack, onChange, onLibrary
       if (target?.closest("[data-radix-popper-content-wrapper]")) return;
       event.preventDefault();
       resetTransientState();
-      zoomAt(event.clientX, event.clientY, event.deltaY);
+      wheelViewport(event);
     };
     window.addEventListener("wheel", onWindowWheel, { capture: true, passive: false });
     return () => window.removeEventListener("wheel", onWindowWheel, { capture: true });
-  }, [resetTransientState, zoomAt]);
+  }, [resetTransientState, wheelViewport]);
 
   // 空白处：直接拖动是平移画布，按住 Shift/⌘ 拖动是框选。
   function beginStage(event: ReactPointerEvent<HTMLDivElement>) {
