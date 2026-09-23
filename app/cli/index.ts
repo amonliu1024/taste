@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { closeSync, existsSync, openSync, readFileSync, unlinkSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
 import { getRuntimePaths, ensureRuntime } from "../server/runtime.js";
@@ -139,6 +140,51 @@ async function importFiles(paths: string[], mode: "move" | "copy", fields: { tit
   return payload;
 }
 
+// 服务器端生成一致的数据库快照：SQLite 在线备份不受正在进行的写入影响。
+const SNAPSHOT_SCRIPT = `import sqlite3, sys
+source = sqlite3.connect(sys.argv[1])
+target = sqlite3.connect(sys.argv[2])
+source.backup(target)
+target.close()
+source.close()
+`;
+
+function sh(command: string, args: string[], input?: string): string {
+  const result = spawnSync(command, args, { encoding: "utf8", input, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+  if (result.status !== 0) throw new Error(`${command} 失败：${(result.stderr || result.stdout || "").trim()}`);
+  return result.stdout;
+}
+
+// 把服务器上的 Runtime 拉回本机：数据库每次留一份带时间的快照，素材与预览只增不删，
+// 所以任一快照配上同一目录下的 files/、previews/ 都能恢复到当时的状态。
+async function backup(args: string[]): Promise<void> {
+  const [host] = positionals(args);
+  const remoteHome = value(args, "--remote-home") ?? ".local/share/taste";
+  const destination = resolve(value(args, "--to") ?? join(homedir(), "Backups", "taste"));
+  if (!host || !/^[A-Za-z0-9._@-]+$/.test(host) || host.startsWith("-")) throw new Error("用法：taste backup <ssh 主机> [--to <本机目录>] [--remote-home <服务器 Runtime 路径>]");
+  if (!/^[A-Za-z0-9._/~-]+$/.test(remoteHome) || remoteHome.startsWith("-")) throw new Error("--remote-home 只能包含字母、数字和 ._/~-");
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const remoteSnapshot = `${remoteHome}/.incoming/backup-${stamp}.sqlite`;
+  const ssh = ["-o", "BatchMode=yes", "-o", "LogLevel=ERROR"];
+  const rsyncShell = ["-e", `ssh ${ssh.join(" ")}`];
+  sh("ssh", [...ssh, host, "python3", "-", `${remoteHome}/db/taste.sqlite`, remoteSnapshot], SNAPSHOT_SCRIPT);
+  try {
+    for (const directory of ["files", "previews", "db"]) mkdirSync(join(destination, directory), { recursive: true, mode: 0o700 });
+    for (const directory of ["files", "previews"]) sh("rsync", ["-a", ...rsyncShell, `${host}:${remoteHome}/${directory}/`, join(destination, directory) + "/"]);
+    sh("rsync", ["-a", ...rsyncShell, `${host}:${remoteSnapshot}`, join(destination, "db", `taste-${stamp}.sqlite`)]);
+  } finally {
+    sh("ssh", [...ssh, host, "rm", "-f", remoteSnapshot]);
+  }
+  output({
+    destination,
+    snapshot: join(destination, "db", `taste-${stamp}.sqlite`),
+    snapshots: readdirSync(join(destination, "db")).filter((name) => name.endsWith(".sqlite")).length,
+    assets: readdirSync(join(destination, "files")).length,
+  });
+}
+
 function output(payload: unknown): void {
   console.log(JSON.stringify(payload, null, 2));
 }
@@ -172,6 +218,8 @@ function help(): never {
   taste form add <name> [--desc <说明>]
   taste form remove <name>       只移出清单，不动内容组上的同名标签
   taste regenerate-previews      重建图片预览（在服务所在机器执行）
+  taste backup <ssh 主机> [--to <目录>] [--remote-home <路径>]
+                                 把服务器 Runtime 拉回本机（默认 ~/Backups/taste）：数据库按时间留快照，素材只增不删
 
   import 与 asset add 上传文件内容，默认在服务端入库后删除本机源文件，--copy 保留。
 `);
@@ -181,6 +229,7 @@ function help(): never {
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
   if (command === "help" || command === "--help") help();
+  if (command === "backup") return backup(args);
   if (REMOTE) {
     if (!command || command === "open") {
       spawnSync("/usr/bin/open", [BASE]);

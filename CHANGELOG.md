@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- `taste backup <ssh 主机>`：把服务器 Runtime 手动拉回本机，数据库每次留一份一致快照，素材与预览增量同步且只增不删。
+
 ### Changed
 
 - Taste 可以部署在 Linux 服务器上，经 `tailscale serve` 等反向代理从任意设备访问；设置 `TASTE_PUBLIC_URL` 放行该地址。

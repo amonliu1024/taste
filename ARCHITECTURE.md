@@ -23,7 +23,7 @@ taste CLI ────────┘                                  v
 ## 模块
 
 - `app/src/`：素材墙、抽屉和无限画布，只消费 HTTP 返回的资源表示；导出通过浏览器下载 `/api/export`。
-- `app/cli/`：除本机模式的启动、停止和状态查询外，所有命令都调用 `TASTE_URL` 或本机的 HTTP 服务；导入读取本机文件后上传，入库成功再按模式删除本机源文件。
+- `app/cli/`：除本机模式的启动、停止和状态查询外，所有命令都调用 `TASTE_URL` 或本机的 HTTP 服务；导入读取本机文件后上传，入库成功再按模式删除本机源文件；`taste backup` 不经 HTTP，直接通过 SSH 与 rsync 拉取服务器 Runtime，数据库快照由服务器端 SQLite 在线备份生成。
 - `app/server/http.ts`：路由、请求校验和访问边界（回环地址加 `TASTE_PUBLIC_URL`），导出单个原文件或 zip。
 - `app/server/zip.ts`：以 STORE 方式打包多选导出，文件名按 UTF-8 标记写入。
 - `app/server/library.ts`：内容组、素材、排序、布局、路径与文件生命周期的唯一技术 Owner，也承担预览重建（`regeneratePreviews`）。

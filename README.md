@@ -8,7 +8,7 @@ Taste 是一个单人、Agent 友好的视觉内容库，部署在自己的服�
 
 Taste 把图片和单体 HTML 收进统一 Runtime：用极简素材墙浏览，用无限画布查看和整理内容组，标题、备注、标签、素材归属和画布布局全是真实持久化数据——不是浏览器缓存，也不是一份会飘的 JSON。同一套数据有一个完整的 CLI，所以「帮我把这半年攒的仪表盘参考归到一组、加上标签」是一句话能交出去的活。
 
-单人自用，日常可用。服务只监听回环地址，由反向代理（如 `tailscale serve`）把一个私有 HTTPS 地址转给它，访问控制交给私有网络，Taste 本身没有账号与登录。Taste 也不提供内置备份，数据只在服务器上保存一份，备份需要自行安排，例如定期把 Runtime 目录拉回另一台机器。
+单人自用，日常可用。服务只监听回环地址，由反向代理（如 `tailscale serve`）把一个私有 HTTPS 地址转给它，访问控制交给私有网络，Taste 本身没有账号与登录。数据只在服务器上保存一份，用 `taste backup` 手动把它拉回本机备份。
 
 ## 主要能力
 
@@ -79,6 +79,15 @@ taste asset crop <asset-id> off
 taste layout <asset-id> --x 10 --y 20 --width 420 --height 300
 taste trash empty --permanently
 ```
+
+### 备份与恢复
+
+```bash
+taste backup lab                      # 默认备份到 ~/Backups/taste
+taste backup lab --to /Volumes/Disk/taste
+```
+
+`taste backup` 通过 SSH 在服务器上用 SQLite 在线备份生成一致的数据库快照，按本地时间存为 `db/taste-YYYYMMDD-HHMMSS.sqlite`，再用 rsync 增量拉取 `files/` 与 `previews/`。素材与预览只增不删，所以任一快照都能配合同目录的文件恢复到当时的状态：把选中的快照复制为新 Runtime 的 `db/taste.sqlite`，连同 `files/`、`previews/` 放进 `TASTE_HOME` 即可。服务器 Runtime 不在默认位置时用 `--remote-home` 指定。
 
 CLI 导入把文件内容上传给服务，服务端确认入库后默认删除本机源文件；需要保留原文件时传入 `--copy`。浏览器上传始终复制。导出交给浏览器下载，单个素材是原文件，多选打成一个 zip。SQLite 和 Runtime 内部路径不是公共接口。
 
