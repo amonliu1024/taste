@@ -8,7 +8,7 @@ Taste 是一个单人、Agent 友好的视觉内容库，部署在自己的服�
 
 Taste 把图片和单体 HTML 收进统一 Runtime：用极简素材墙浏览，用无限画布查看和整理内容组，标题、备注、标签、素材归属和画布布局全是真实持久化数据——不是浏览器缓存，也不是一份会飘的 JSON。同一套数据有一个完整的 CLI，所以「帮我把这半年攒的仪表盘参考归到一组、加上标签」是一句话能交出去的活。
 
-单人自用，日常可用。服务只监听回环地址，由反向代理（如 `tailscale serve`）把一个私有 HTTPS 地址转给它，访问控制交给私有网络，Taste 本身没有账号与登录；Taste 也不提供内置备份，数据只有服务器上一份，请为服务器开启快照。
+单人自用，日常可用。服务只监听回环地址，由反向代理（如 `tailscale serve`）把一个私有 HTTPS 地址转给它，访问控制交给私有网络，Taste 本身没有账号与登录。Taste 也不提供内置备份，数据只在服务器上保存一份，备份需要自行安排，例如定期把 Runtime 目录拉回另一台机器。
 
 ## 主要能力
 
@@ -31,17 +31,37 @@ Taste 把图片和单体 HTML 收进统一 Runtime：用极简素材墙浏览，
 
 ## 部署与连接
 
-服务器上构建并常驻服务，`TASTE_PUBLIC_URL` 写成浏览器访问的地址，服务据此放行该地址的请求与写入：
+以 Ubuntu 服务器加 Tailscale 为例。先装系统依赖（Node.js 22 用官方发行包），再在 `app/` 里安装并构建：
 
 ```bash
+sudo apt install ./google-chrome-stable_current_amd64.deb fonts-noto-cjk libheif-examples libheif-plugin-libde265
 cd app && pnpm install --frozen-lockfile && pnpm build
-TASTE_PUBLIC_URL=https://lab.example.ts.net node dist-node/server/index.js   # 生产用 systemd 常驻
-tailscale serve --bg http://127.0.0.1:4178
 ```
 
-正式数据默认写入服务器的 `~/.local/share/taste`。数据库只记录相对 Runtime 根的路径，整个目录可以原样搬到另一台机器。
+用 systemd 常驻服务。`TASTE_PUBLIC_URL` 必须与浏览器实际访问的地址完全一致（含端口），服务据此放行该地址的请求与写入；Tailscale 的私有 HTTPS 地址只支持 443、8443、10000 三个端口：
 
-使用端把 `app/bin/taste` 链接进 PATH，并设置 `TASTE_URL` 指向同一地址后，所有命令都走服务器：`taste` 或 `taste open` 打开浏览器，`taste status` 查看连通性；`start`、`stop`、`regenerate-previews` 需在服务器上执行。不设置 `TASTE_URL` 时 CLI 按原方式在本机 `127.0.0.1:4178` 启动服务，用于开发。完整命令见 `taste help`。
+```ini
+[Service]
+User=<你的用户>
+WorkingDirectory=/path/to/taste/app
+Environment=TASTE_PUBLIC_URL=https://lab.example.ts.net:10000
+ExecStart=/usr/local/bin/node dist-node/server/index.js
+Restart=on-failure
+```
+
+```bash
+tailscale serve --bg --https=10000 http://127.0.0.1:4178
+```
+
+正式数据默认写入服务器的 `~/.local/share/taste`。数据库只记录相对 Runtime 根的路径，整个目录可以原样搬到另一台机器，旧库在首次打开时自动转换。
+
+服务器上的代码直接检出本仓库，更新时拉取、重新构建并重启：
+
+```bash
+git pull --ff-only && cd app && pnpm install --frozen-lockfile && pnpm build && sudo systemctl restart taste
+```
+
+使用端把 `app/bin/taste` 链接进 PATH，并在 shell 配置里设置 `TASTE_URL` 为同一地址，所有命令就都作用于服务器数据：`taste` 或 `taste open` 打开浏览器，`taste status` 查看连通性；`start`、`stop`、`regenerate-previews` 需在服务器上执行。不设置 `TASTE_URL` 时 CLI 在本机 `127.0.0.1:4178` 启动服务，用于开发。完整命令见 `taste help`，全部配置项见 [ARCHITECTURE.md](ARCHITECTURE.md#配置)。
 
 ## 典型用法
 
@@ -93,7 +113,7 @@ pnpm test
 ## 仓库结构
 
 - [app/src/](app/src/)：素材墙、内容组与无限画布前端
-- [app/server/](app/server/)：本地服务、SQLite 存储与文件生命周期
+- [app/server/](app/server/)：HTTP 服务、SQLite 存储、文件生命周期与图片处理
 - [app/cli/](app/cli/)、[app/bin/taste](app/bin/taste)：与浏览器同能力的 CLI 实现与入口
 - [skills/](skills/)、[scripts/deploy-skills.sh](scripts/deploy-skills.sh)：配套的 Agent Skill 与部署脚本
 - [ARCHITECTURE.md](ARCHITECTURE.md)：实现结构与安全边界
