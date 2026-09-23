@@ -5,7 +5,7 @@ import { createTasteHttpServer } from "./http.js";
 
 export async function startServer(): Promise<void> {
   const webRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "dist");
-  const server = createTasteHttpServer({ webRoot });
+  const server = createTasteHttpServer({ webRoot, publicUrl: process.env.TASTE_PUBLIC_URL || undefined });
   const address = await server.listen(Number(process.env.TASTE_PORT ?? 4178));
   writeFileSync(server.store.paths.serverInfo, JSON.stringify({ pid: process.pid, port: address.port, startedAt: new Date().toISOString() }), { mode: 0o600 });
 

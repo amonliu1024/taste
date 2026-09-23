@@ -1,17 +1,17 @@
 #!/usr/bin/env node
-import { closeSync, existsSync, openSync, readFileSync, rmSync } from "node:fs";
-import { dirname, extname, join } from "node:path";
+import { closeSync, existsSync, openSync, readFileSync, unlinkSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
-import { DatabaseSync } from "node:sqlite";
 import { getRuntimePaths, ensureRuntime } from "../server/runtime.js";
-import { createPreview, readImageDimensions } from "../server/preview.js";
 import { assertStopTarget } from "./safety.js";
 import { LibraryStore } from "../server/library.js";
 import { startServer } from "../server/index.js";
 
 const PORT = Number(process.env.TASTE_PORT ?? 4178);
-const BASE = `http://127.0.0.1:${PORT}`;
+// 设置 TASTE_URL 时连接远程服务（如 https://lab.xxx.ts.net），服务的启停由那台机器管理。
+const REMOTE = process.env.TASTE_URL?.replace(/\/+$/, "") || null;
+const BASE = REMOTE ?? `http://127.0.0.1:${PORT}`;
 
 function value(args: string[], name: string): string | undefined {
   const index = args.indexOf(name);
@@ -48,7 +48,7 @@ async function request(path: string, options: RequestInit = {}): Promise<Record<
 
 async function health(): Promise<{ ok: boolean; pid: number; home: string } | null> {
   try {
-    const response = await fetch(`${BASE}/api/health`, { signal: AbortSignal.timeout(800) });
+    const response = await fetch(`${BASE}/api/health`, { signal: AbortSignal.timeout(REMOTE ? 8000 : 800) });
     return response.ok ? await response.json() as { ok: boolean; pid: number; home: string } : null;
   } catch {
     return null;
@@ -111,43 +111,32 @@ async function stop(): Promise<void> {
   console.log("Taste 已停止。");
 }
 
-// 用当前预览生成逻辑重新生成所有图片素材的预览图，并更新数据库中的 preview_path，再补算自动去边裁切框。
-// HTML 素材的预览由 Chromium 截图生成，此命令不动它们（之前的预览规则未变）。
 async function regeneratePreviews(): Promise<void> {
-  const paths = getRuntimePaths();
-  if (!existsSync(paths.db)) throw new Error(`数据库不存在：${paths.db}`);
-  const db = new DatabaseSync(paths.db);
-  const rows = db.prepare("SELECT id, kind, storage_path, preview_path, width, height FROM assets WHERE state = 'active' AND kind = 'image' ORDER BY created_at").all() as { id: string; kind: string; storage_path: string; preview_path: string | null; width: number | null; height: number | null }[];
-  let regenerated = 0;
-  let dimensionsBackfilled = 0;
-  const unchanged: string[] = [];
-  const failed: { id: string; name: string; reason: string }[] = [];
-  for (const row of rows) {
-    const source = row.storage_path;
-    if (!existsSync(source)) { failed.push({ id: row.id, name: source, reason: "原文件缺失" }); continue; }
-    const dims = row.width && row.height ? { width: Number(row.width), height: Number(row.height) } : readImageDimensions(source);
-    // 缺尺寸的素材会被当成“超大图”压缩预览，也无法按需换原图、无法双击还原原始尺寸，顺手补回来。
-    if (!(row.width && row.height) && dims) {
-      db.prepare("UPDATE assets SET width = ?, height = ? WHERE id = ?").run(dims.width, dims.height, row.id);
-      dimensionsBackfilled += 1;
-    }
-    const destinationBase = join(paths.previews, row.id);
-    const created = createPreview("image", source, destinationBase, dims);
-    if (!created) { failed.push({ id: row.id, name: source, reason: "预览生成失败" }); continue; }
-    const oldPath = row.preview_path;
-    if (oldPath && oldPath !== created && existsSync(oldPath)) rmSync(oldPath, { force: true });
-    if (oldPath !== created) {
-      db.prepare("UPDATE assets SET preview_path = ? WHERE id = ?").run(created, row.id);
-    }
-    regenerated += 1;
-    unchanged.push(`${row.id.slice(0, 8)} → ${extname(created)}`);
-  }
-  db.close();
-  // 预览与尺寸就绪后统一补算自动去边的裁切框（用户关闭过去边的素材保持原样）。
   const store = new LibraryStore();
-  const crops = store.refreshCrops();
-  store.close();
-  output({ total: rows.length, regenerated, dimensionsBackfilled, failed, crops, sample: unchanged.slice(0, 5) });
+  try {
+    output(store.regeneratePreviews());
+  } finally {
+    store.close();
+  }
+}
+
+// 导入统一上传文件内容，本机与远程服务走同一条路径；服务端确认入库后，默认移动模式才删除本机源文件。
+async function importFiles(paths: string[], mode: "move" | "copy", fields: { title?: string; note?: string; tags?: string[]; itemId?: string }): Promise<unknown> {
+  if (paths.length === 0) throw new Error("至少需要一个文件路径。");
+  const files = paths.map((path) => ({ name: basename(path), data: readFileSync(path).toString("base64") }));
+  const payload = await request("/api/import/uploads", { method: "POST", body: JSON.stringify({ files, ...fields }) });
+  if (mode === "move") {
+    const failures: string[] = [];
+    for (const path of paths) {
+      try {
+        unlinkSync(path);
+      } catch {
+        failures.push(path);
+      }
+    }
+    if (failures.length > 0) throw new Error(`内容已安全导入，但未能移除以下源文件：${failures.join("、")}`);
+  }
+  return payload;
 }
 
 function output(payload: unknown): void {
@@ -156,6 +145,9 @@ function output(payload: unknown): void {
 
 function help(): never {
   console.log(`Taste CLI
+
+  设置 TASTE_URL（如 https://lab.xxx.ts.net）后连接远程服务：taste / taste open 打开浏览器，
+  start、stop、regenerate-previews 需在服务所在机器执行；未设置时使用本机 127.0.0.1:${PORT}。
 
   taste                     前台运行并打开浏览器，Ctrl+C 停止
   taste start [--open]      后台运行
@@ -179,15 +171,28 @@ function help(): never {
   taste forms                    形态清单（一级分类）、说明与内容组数
   taste form add <name> [--desc <说明>]
   taste form remove <name>       只移出清单，不动内容组上的同名标签
-  taste regenerate-previews
+  taste regenerate-previews      重建图片预览（在服务所在机器执行）
+
+  import 与 asset add 上传文件内容，默认在服务端入库后删除本机源文件，--copy 保留。
 `);
   process.exit(0);
 }
 
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
-  if (!command) return serve();
   if (command === "help" || command === "--help") help();
+  if (REMOTE) {
+    if (!command || command === "open") {
+      spawnSync("/usr/bin/open", [BASE]);
+      console.log(BASE);
+      return;
+    }
+    if (["start", "stop", "regenerate-previews"].includes(command)) throw new Error(`Taste 运行在 ${BASE}，${command} 需在那台机器上执行。`);
+    if (command === "status") return output({ running: Boolean(await health()), url: BASE });
+    if (!(await health())) throw new Error(`连不上 Taste 服务：${BASE}`);
+    return run(command, args);
+  }
+  if (!command) return serve();
   if (command === "start") return start(args.includes("--open"));
   if (command === "stop") return stop();
   if (command === "status") {
@@ -200,6 +205,10 @@ async function main(): Promise<void> {
   const current = await health();
   if (current && current.home !== getRuntimePaths().home) throw new Error(`端口 ${PORT} 已由另一个 Taste Runtime 使用：${current.home}`);
   if (!current) await start(false);
+  return run(command, args);
+}
+
+async function run(command: string, args: string[]): Promise<void> {
   if (command === "list") return output(await request("/api/items"));
   if (command === "search") return output(await request(`/api/items?q=${encodeURIComponent(args.join(" "))}`));
   if (command === "show") return output(await request(`/api/items/${args[0]}`));
@@ -209,9 +218,9 @@ async function main(): Promise<void> {
     }) }));
   }
   if (command === "import") {
-    return output(await request("/api/import/paths", { method: "POST", body: JSON.stringify({
-      paths: positionals(args), mode: args.includes("--copy") ? "copy" : "move", title: value(args, "--title"), note: value(args, "--note") ?? "", tags: values(args, "--tag"),
-    }) }));
+    return output(await importFiles(positionals(args), args.includes("--copy") ? "copy" : "move", {
+      title: value(args, "--title"), note: value(args, "--note") ?? "", tags: values(args, "--tag"),
+    }));
   }
   if (command === "update") {
     const id = args[0];
@@ -253,9 +262,7 @@ async function main(): Promise<void> {
   if (command === "asset") {
     const [action, first, ...rest] = args;
     if (action === "add") {
-      return output(await request("/api/import/paths", { method: "POST", body: JSON.stringify({
-        itemId: first, paths: positionals(rest), mode: rest.includes("--copy") ? "copy" : "move",
-      }) }));
+      return output(await importFiles(positionals(rest), rest.includes("--copy") ? "copy" : "move", { itemId: first }));
     }
     if (action === "move") return output(await request(`/api/assets/${first}`, { method: "PATCH", body: JSON.stringify({ targetItemId: rest[0] === "staged" ? null : rest[0] }) }));
     if (action === "rename" && rest[0]) return output(await request(`/api/assets/${first}`, { method: "PATCH", body: JSON.stringify({ name: rest.join(" ") }) }));

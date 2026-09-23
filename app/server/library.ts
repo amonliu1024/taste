@@ -10,10 +10,9 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, extname, join } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { convertToJpeg, createPreview, detectContentCrop, readImageDimensions, type CropBox } from "./preview.js";
-import { exportAssetFile, exportAssetFilesToDirectory } from "./export.js";
 import { ensureRuntime, getRuntimePaths, type RuntimePaths } from "./runtime.js";
 
 // 画布尺寸上限：双击还原原始尺寸时，长边上万像素的原图也要能完整落到画布上。
@@ -217,6 +216,7 @@ export class LibraryStore {
       for (const column of ["crop_x", "crop_y", "crop_width", "crop_height"]) this.db.exec(`ALTER TABLE assets ADD COLUMN ${column} INTEGER`);
       this.db.exec("ALTER TABLE assets ADD COLUMN crop_disabled INTEGER NOT NULL DEFAULT 0");
     }
+    this.relativizeStoredPaths();
     const itemColumns = this.db.prepare("PRAGMA table_info(items)").all() as DbRow[];
     if (!itemColumns.some((column) => String(column.name) === "title")) {
       this.db.exec("ALTER TABLE items ADD COLUMN title TEXT NOT NULL DEFAULT ''");
@@ -251,6 +251,44 @@ export class LibraryStore {
         }
       }
     }
+  }
+
+  // 数据库只保存相对 Runtime 根的路径，Runtime 整体搬到另一台机器或另一个 TASTE_HOME 后仍然成立。
+  // 旧库里的绝对路径按固定布局 files/<id>/<name> 与 previews/<file> 截出相对部分。
+  private relativizeStoredPaths(): void {
+    const rows = this.db.prepare("SELECT id, storage_path, preview_path FROM assets WHERE storage_path LIKE '/%' OR preview_path LIKE '/%'").all() as DbRow[];
+    if (rows.length === 0) return;
+    const toRelative = (value: unknown, pattern: RegExp): string | null => {
+      if (value === null || value === undefined) return null;
+      const text = String(value);
+      if (!isAbsolute(text)) return text;
+      const matched = text.match(pattern);
+      if (!matched) throw new Error(`无法识别的素材路径：${text}`);
+      return matched[1];
+    };
+    const update = this.db.prepare("UPDATE assets SET storage_path = ?, preview_path = ? WHERE id = ?");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const row of rows) {
+        update.run(
+          toRelative(row.storage_path, /\/(files\/[^/]+\/[^/]+)$/),
+          toRelative(row.preview_path, /\/(previews\/[^/]+)$/),
+          String(row.id),
+        );
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private absolute(stored: unknown): string {
+    return join(this.paths.home, String(stored));
+  }
+
+  private stored(path: string): string {
+    return relative(this.paths.home, path);
   }
 
   listItems(query = "", state: ItemState = "active"): ItemRecord[] {
@@ -319,16 +357,6 @@ export class LibraryStore {
       assets: (this.db.prepare("SELECT * FROM assets WHERE state = 'trash' ORDER BY updated_at DESC").all() as DbRow[])
         .map((row) => this.hydrateAsset(row)),
     };
-  }
-
-  importPaths(paths: string[], options: { title?: string; note?: string; tags?: string[]; mode?: "move" | "copy"; itemId?: string } = {}): ItemRecord {
-    if (paths.length === 0) throw new Error("至少需要一个文件。 ");
-    const mode = options.mode ?? "move";
-    const sources = paths.map((path) => {
-      if (!existsSync(path) || !statSync(path).isFile()) throw new Error(`文件不存在：${path}`);
-      return { path, name: cleanName(path), removeAfter: mode === "move" };
-    });
-    return this.importSources(sources, options);
   }
 
   importUploads(files: Array<{ name: string; data: string }>, options: { title?: string; note?: string; tags?: string[]; itemId?: string } = {}): ItemRecord {
@@ -468,7 +496,7 @@ export class LibraryStore {
     if (asset.kind !== "image") throw new Error("只有图片素材可以自动去边。 ");
     const row = this.db.prepare("SELECT storage_path FROM assets WHERE id = ?").get(assetId) as DbRow;
     const dimensions = asset.width && asset.height ? { width: asset.width, height: asset.height } : null;
-    const crop = enabled ? detectContentCrop(String(row.storage_path), dimensions, join(this.paths.incoming, `${assetId}-crop`)) : null;
+    const crop = enabled ? detectContentCrop(this.absolute(row.storage_path), dimensions, join(this.paths.incoming, `${assetId}-crop`)) : null;
     const display = crop ?? dimensions;
     const canvasHeight = display
       ? Math.max(90, Math.min(MAX_CANVAS_SIZE, asset.canvasWidth * display.height / display.width))
@@ -480,6 +508,33 @@ export class LibraryStore {
   }
 
   // 为未被用户关闭去边的图片重新检测裁切框，供 `taste regenerate-previews` 批量补算。
+  // 用当前预览生成逻辑重建全部活跃图片素材的预览，顺手补回缺失的尺寸，再统一补算自动去边裁切框。
+  // HTML 素材的预览由 Chromium 截图生成，这里不动它们。
+  regeneratePreviews(): { total: number; regenerated: number; dimensionsBackfilled: number; failed: Array<{ id: string; reason: string }>; crops: { checked: number; cropped: number } } {
+    const rows = this.db.prepare("SELECT id, storage_path, preview_path, width, height FROM assets WHERE state = 'active' AND kind = 'image' ORDER BY created_at").all() as DbRow[];
+    let regenerated = 0;
+    let dimensionsBackfilled = 0;
+    const failed: Array<{ id: string; reason: string }> = [];
+    for (const row of rows) {
+      const id = String(row.id);
+      const source = this.absolute(row.storage_path);
+      if (!existsSync(source)) { failed.push({ id, reason: "原文件缺失" }); continue; }
+      const dimensions = row.width && row.height ? { width: Number(row.width), height: Number(row.height) } : readImageDimensions(source);
+      // 缺尺寸的素材会被当成超大图压缩预览，也无法按需换原图，顺手补回来。
+      if (!(row.width && row.height) && dimensions) {
+        this.db.prepare("UPDATE assets SET width = ?, height = ? WHERE id = ?").run(dimensions.width, dimensions.height, id);
+        dimensionsBackfilled += 1;
+      }
+      const created = createPreview("image", source, join(this.paths.previews, id), dimensions);
+      if (!created) { failed.push({ id, reason: "预览生成失败" }); continue; }
+      const previous = row.preview_path ? this.absolute(row.preview_path) : null;
+      if (previous && previous !== created) rmSync(previous, { force: true });
+      if (previous !== created) this.db.prepare("UPDATE assets SET preview_path = ? WHERE id = ?").run(this.stored(created), id);
+      regenerated += 1;
+    }
+    return { total: rows.length, regenerated, dimensionsBackfilled, failed, crops: this.refreshCrops() };
+  }
+
   refreshCrops(): { checked: number; cropped: number } {
     const rows = this.db.prepare("SELECT id FROM assets WHERE kind = 'image' AND crop_disabled = 0 AND state != 'trash'").all() as DbRow[];
     let cropped = 0;
@@ -589,16 +644,16 @@ export class LibraryStore {
     const moved: Array<{ from: string; to: string }> = [];
     try {
       for (const row of assetRows) {
-        const storageDir = dirname(String(row.storage_path));
+        const storageDir = dirname(this.absolute(row.storage_path));
         if (existsSync(storageDir)) {
           const target = join(purgeDir, `${row.id}-files`);
           renameSync(storageDir, target);
           moved.push({ from: storageDir, to: target });
         }
-        if (row.preview_path && existsSync(String(row.preview_path))) {
+        if (row.preview_path && existsSync(this.absolute(row.preview_path))) {
           const target = join(purgeDir, `${row.id}-preview.jpg`);
-          renameSync(String(row.preview_path), target);
-          moved.push({ from: String(row.preview_path), to: target });
+          renameSync(this.absolute(row.preview_path), target);
+          moved.push({ from: this.absolute(row.preview_path), to: target });
         }
       }
       this.db.exec("BEGIN IMMEDIATE");
@@ -630,30 +685,26 @@ export class LibraryStore {
   resolveAssetPath(id: string, variant: "original" | "preview"): { path: string; kind: AssetKind; name: string } {
     const row = this.db.prepare("SELECT * FROM assets WHERE id = ?").get(id) as DbRow | undefined;
     if (!row) throw new Error("文件不存在。 ");
-    const original = String(row.storage_path);
-    const preview = row.preview_path ? String(row.preview_path) : original;
+    const original = this.absolute(row.storage_path);
+    const preview = row.preview_path ? this.absolute(row.preview_path) : original;
     return { path: variant === "preview" ? preview : original, kind: String(row.kind) as AssetKind, name: String(row.name) };
   }
 
-  // 导出素材：把原文件复制一份到目标地址；未传 targetPath 时弹原生对话框选择。
-  // 返回 { path } 成功，{ cancelled: true } 用户取消。
-  exportAsset(id: string, targetPath?: string): { path: string } | { cancelled: true } {
-    const row = this.db.prepare("SELECT name, storage_path FROM assets WHERE id = ? AND state = 'active'").get(id) as DbRow | undefined;
-    if (!row) throw new Error("素材不存在。 ");
-    const written = exportAssetFile(String(row.storage_path), String(row.name), targetPath);
-    return written ? { path: written } : { cancelled: true };
-  }
-
-  // 多选导出：一次只弹一个“选择文件夹”对话框，把选中的原文件都复制进去。
-  exportAssets(ids: string[], targetDirectory?: string): { paths: string[] } | { cancelled: true } {
-    const sources = ids.map((id) => {
+  // 导出：返回选中活跃素材的原文件与下载用文件名，同名时依次加序号，不改动素材本身。
+  exportFiles(ids: string[]): Array<{ path: string; name: string }> {
+    if (ids.length === 0) throw new Error("没有可导出的素材。 ");
+    const used = new Set<string>();
+    return ids.map((id) => {
       const row = this.db.prepare("SELECT name, storage_path FROM assets WHERE id = ? AND state = 'active'").get(id) as DbRow | undefined;
       if (!row) throw new Error("素材不存在。 ");
-      return { path: String(row.storage_path), name: String(row.name) };
+      const name = String(row.name);
+      const extension = extname(name);
+      const base = name.slice(0, name.length - extension.length) || "素材";
+      let unique = name;
+      for (let index = 1; used.has(unique.toLowerCase()); index += 1) unique = `${base}-${index}${extension}`;
+      used.add(unique.toLowerCase());
+      return { path: this.absolute(row.storage_path), name: unique };
     });
-    if (sources.length === 0) throw new Error("没有可导出的素材。 ");
-    const written = exportAssetFilesToDirectory(sources, targetDirectory);
-    return written ? { paths: written } : { cancelled: true };
   }
 
   private importSources(sources: ImportSource[], options: { title?: string; note?: string; tags?: string[]; itemId?: string }): ItemRecord {
@@ -707,7 +758,7 @@ export class LibraryStore {
               size, sha256, width, height, crop_x, crop_y, crop_width, crop_height, x, y, canvas_width, canvas_height, created_at, updated_at
             ) VALUES (?, ?, NULL, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(
-            asset.id, itemId, asset.source.name, asset.kind, asset.finalFile, asset.finalPreview,
+            asset.id, itemId, asset.source.name, asset.kind, this.stored(asset.finalFile), asset.finalPreview ? this.stored(asset.finalPreview) : null,
             asset.size, asset.sha256, asset.width, asset.height,
             asset.crop?.x ?? null, asset.crop?.y ?? null, asset.crop?.width ?? null, asset.crop?.height ?? null, asset.x, asset.y,
             asset.canvasWidth, asset.canvasHeight, timestamp, timestamp,

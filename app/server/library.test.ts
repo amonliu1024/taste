@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import sharp from "sharp";
 import { LibraryStore } from "./library.js";
 
 const PNG_A = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
 const PNG_B = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nWQAAAAASUVORK5CYII=", "base64");
+
+// 测试走与浏览器、CLI 相同的上传入口。
+function upload(store: LibraryStore, paths: string[], options: Parameters<LibraryStore["importUploads"]>[1] = {}) {
+  return store.importUploads(paths.map((path) => ({ name: basename(path), data: readFileSync(path).toString("base64") })), options);
+}
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "taste-test-"));
@@ -30,12 +36,12 @@ test("copy import preserves the source and duplicate hashes are rejected", () =>
   const f = fixture();
   try {
     writeFileSync(f.source, PNG_A);
-    const item = f.store.importPaths([f.source], { mode: "copy", note: "参考", tags: ["UI", "UI"] });
+    const item = upload(f.store, [f.source], { note: "参考", tags: ["UI", "UI"] });
     assert.equal(existsSync(f.source), true);
     assert.equal(item.note, "参考");
     assert.deepEqual(item.tags, ["UI"]);
     assert.equal(item.assets.length, 1);
-    assert.throws(() => f.store.importPaths([f.source], { mode: "copy" }), /重复文件已存在/);
+    assert.throws(() => upload(f.store, [f.source]), /重复文件已存在/);
   } finally {
     f.close();
   }
@@ -47,7 +53,7 @@ test("an empty content item can be created and later receive a file", () => {
     const empty = f.store.createItem("待补灵感", "先记想法", ["待补"]);
     assert.equal(empty.assets.length, 0);
     writeFileSync(f.source, PNG_A);
-    const updated = f.store.importPaths([f.source], { mode: "copy", itemId: empty.id });
+    const updated = upload(f.store, [f.source], { itemId: empty.id });
     assert.equal(updated.assets.length, 1);
     assert.equal(updated.title, "待补灵感");
     assert.equal(updated.note, "先记想法");
@@ -176,7 +182,7 @@ test("a legacy manual cover no longer overrides the first active file", () => {
   try {
     writeFileSync(f.source, PNG_A);
     writeFileSync(second, PNG_B);
-    const item = f.store.importPaths([f.source, second], { mode: "copy" });
+    const item = upload(f.store, [f.source, second]);
     const legacyDb = new DatabaseSync(f.store.paths.db);
     legacyDb.prepare("UPDATE items SET cover_asset_id = ? WHERE id = ?").run(item.assets[1].id, item.id);
     legacyDb.close();
@@ -186,42 +192,11 @@ test("a legacy manual cover no longer overrides the first active file", () => {
   }
 });
 
-test("move import removes the source only after the managed copy exists", () => {
-  const f = fixture();
-  try {
-    writeFileSync(f.source, PNG_A);
-    const item = f.store.importPaths([f.source], { mode: "move" });
-    assert.equal(existsSync(f.source), false);
-    assert.equal(existsSync(f.store.resolveAssetPath(item.assets[0].id, "original").path), true);
-  } finally {
-    f.close();
-  }
-});
-
-test("a source cleanup failure keeps both the managed file and original source", () => {
-  const f = fixture();
-  const lockedDir = join(f.root, "locked");
-  const lockedSource = join(lockedDir, "locked.png");
-  try {
-    mkdirSync(lockedDir);
-    writeFileSync(lockedSource, PNG_A);
-    chmodSync(lockedDir, 0o500);
-    assert.throws(() => f.store.importPaths([lockedSource], { mode: "move" }), /内容已安全导入/);
-    assert.equal(existsSync(lockedSource), true);
-    const items = f.store.listItems();
-    assert.equal(items.length, 1);
-    assert.equal(existsSync(f.store.resolveAssetPath(items[0].assets[0].id, "original").path), true);
-  } finally {
-    chmodSync(lockedDir, 0o700);
-    f.close();
-  }
-});
-
 test("moving the last asset to staging removes the empty item and can create a new item", () => {
   const f = fixture();
   try {
     writeFileSync(f.source, PNG_A);
-    const item = f.store.importPaths([f.source], { mode: "copy", note: "旧备注" });
+    const item = upload(f.store, [f.source], { note: "旧备注" });
     const asset = f.store.moveAsset(item.assets[0].id, null);
     assert.equal(asset.state, "staged");
     assert.throws(() => f.store.getItem(item.id), /不存在/);
@@ -239,8 +214,8 @@ test("appended and moved assets receive a free initial position", () => {
   try {
     writeFileSync(f.source, PNG_A);
     writeFileSync(second, PNG_B);
-    const item = f.store.importPaths([f.source], { mode: "copy" });
-    const appended = f.store.importPaths([second], { mode: "copy", itemId: item.id });
+    const item = upload(f.store, [f.source]);
+    const appended = upload(f.store, [second], { itemId: item.id });
     assert.notDeepEqual(
       [appended.assets[0].x, appended.assets[0].y],
       [appended.assets[1].x, appended.assets[1].y],
@@ -256,8 +231,8 @@ test("asset movement, item trash and permanent empty follow one state machine", 
   try {
     writeFileSync(f.source, PNG_A);
     writeFileSync(second, PNG_B);
-    const firstItem = f.store.importPaths([f.source], { mode: "copy" });
-    const secondItem = f.store.importPaths([second], { mode: "copy" });
+    const firstItem = upload(f.store, [f.source]);
+    const secondItem = upload(f.store, [second]);
     const moved = f.store.moveAsset(secondItem.assets[0].id, firstItem.id);
     assert.equal(moved.itemId, firstItem.id);
     assert.throws(() => f.store.getItem(secondItem.id), /不存在/);
@@ -277,49 +252,35 @@ test("asset movement, item trash and permanent empty follow one state machine", 
 type Box = { x: number; y: number; width: number; height: number };
 const within = (box: Box) => (x: number, y: number) => x >= box.x && x < box.x + box.width && y >= box.y && y < box.y + box.height;
 
-// 写一张 24 位 BMP 再用 sips 转成 PNG：content 覆盖的像素用 fill 色，其余是 border 色。
-function writeFramedPng(path: string, size: { width: number; height: number }, content: Box | ((x: number, y: number) => boolean), border: number[], fill: number[]) {
+// 用 sharp 从原始 RGB 像素写 PNG：content 覆盖的像素用 fill 色，其余是 border 色。
+async function writeFramedPng(path: string, size: { width: number; height: number }, content: Box | ((x: number, y: number) => boolean), border: number[], fill: number[]) {
   const inside = typeof content === "function" ? content : within(content);
-  const stride = Math.ceil((size.width * 3) / 4) * 4;
-  const data = Buffer.alloc(54 + stride * size.height);
-  data.write("BM", 0, "latin1");
-  data.writeUInt32LE(data.length, 2);
-  data.writeUInt32LE(54, 10);
-  data.writeUInt32LE(40, 14);
-  data.writeInt32LE(size.width, 18);
-  data.writeInt32LE(-size.height, 22);
-  data.writeUInt16LE(1, 26);
-  data.writeUInt16LE(24, 28);
+  const data = Buffer.alloc(size.width * size.height * 3);
   for (let y = 0; y < size.height; y += 1) {
-    for (let x = 0; x < size.width; x += 1) {
-      const [r, g, b] = inside(x, y) ? fill : border;
-      data.set([b, g, r], 54 + y * stride + x * 3);
-    }
+    for (let x = 0; x < size.width; x += 1) data.set(inside(x, y) ? fill : border, (y * size.width + x) * 3);
   }
-  const bmp = `${path}.bmp`;
-  writeFileSync(bmp, data);
-  assert.equal(spawnSync("/usr/bin/sips", ["-s", "format", "png", bmp, "--out", path]).status, 0);
+  await sharp(data, { raw: { width: size.width, height: size.height, channels: 3 } }).png().toFile(path);
 }
 
-test("colored borders are cropped for display while full-bleed images stay whole", () => {
+test("colored borders are cropped for display while full-bleed images stay whole", async () => {
   const f = fixture();
   try {
     const framed = join(f.root, "framed.png");
-    writeFramedPng(framed, { width: 400, height: 300 }, { x: 40, y: 30, width: 300, height: 150 }, [230, 40, 90], [20, 20, 20]);
-    const asset = f.store.importPaths([framed], { mode: "copy" }).assets[0];
+    await writeFramedPng(framed, { width: 400, height: 300 }, { x: 40, y: 30, width: 300, height: 150 }, [230, 40, 90], [20, 20, 20]);
+    const asset = upload(f.store, [framed]).assets[0];
     assert.deepEqual(asset.crop, { x: 40, y: 30, width: 300, height: 150 });
     assert.equal(asset.width, 400);
     assert.equal(Math.round(asset.canvasWidth / asset.canvasHeight), 2);
 
     const bleed = join(f.root, "bleed.png");
-    writeFramedPng(bleed, { width: 400, height: 300 }, { x: 0, y: 0, width: 400, height: 300 }, [255, 255, 255], [20, 120, 200]);
-    assert.equal(f.store.importPaths([bleed], { mode: "copy" }).assets[0].crop, null);
+    await writeFramedPng(bleed, { width: 400, height: 300 }, { x: 0, y: 0, width: 400, height: 300 }, [255, 255, 255], [20, 120, 200]);
+    assert.equal(upload(f.store, [bleed]).assets[0].crop, null);
 
     // 同底色上的零散内容（十字：外框边上大多仍是底色）回留约 3% 长边的呼吸边距；实心色块则贴边裁。
     const sparse = join(f.root, "sparse.png");
     const bar = (x: number, y: number) => within({ x: 150, y: 145, width: 100, height: 10 })(x, y) || within({ x: 195, y: 120, width: 10, height: 60 })(x, y);
-    writeFramedPng(sparse, { width: 400, height: 300 }, bar, [255, 255, 255], [20, 20, 20]);
-    assert.deepEqual(f.store.importPaths([sparse], { mode: "copy" }).assets[0].crop, { x: 138, y: 108, width: 124, height: 84 });
+    await writeFramedPng(sparse, { width: 400, height: 300 }, bar, [255, 255, 255], [20, 20, 20]);
+    assert.deepEqual(upload(f.store, [sparse]).assets[0].crop, { x: 138, y: 108, width: 124, height: 84 });
 
     const off = f.store.setAssetCrop(asset.id, false);
     assert.equal(off.crop, null);
@@ -332,20 +293,20 @@ test("colored borders are cropped for display while full-bleed images stay whole
   }
 });
 
-test("HEIC imports are stored as JPEG and tag usage is listed for reuse", () => {
+test("HEIC imports are stored as JPEG and tag usage is listed for reuse", { skip: !existsSync("/usr/bin/sips") && "需要 sips 生成 HEIC 夹具" }, async () => {
   const f = fixture();
   try {
     const png = join(f.root, "photo.png");
-    writeFramedPng(png, { width: 64, height: 48 }, { x: 0, y: 0, width: 64, height: 48 }, [0, 0, 0], [200, 90, 40]);
+    await writeFramedPng(png, { width: 64, height: 48 }, { x: 0, y: 0, width: 64, height: 48 }, [0, 0, 0], [200, 90, 40]);
     const heic = join(f.root, "photo.heic");
     assert.equal(spawnSync("/usr/bin/sips", ["-s", "format", "heic", png, "--out", heic]).status, 0);
-    const item = f.store.importPaths([heic], { mode: "copy", tags: ["摄影", "暖色"] });
+    const item = upload(f.store, [heic], { tags: ["摄影", "暖色"] });
     assert.equal(item.title, "photo");
     assert.equal(item.assets[0].name, "photo.jpg");
     assert.equal(item.assets[0].width, 64);
-    assert.throws(() => f.store.importPaths([heic], { mode: "copy" }), /重复文件已存在/);
+    assert.throws(() => upload(f.store, [heic]), /重复文件已存在/);
     writeFileSync(f.source, PNG_A);
-    f.store.importPaths([f.source], { mode: "copy", tags: ["摄影"] });
+    upload(f.store, [f.source], { tags: ["摄影"] });
     assert.deepEqual(f.store.listTags(), [{ name: "摄影", count: 2 }, { name: "暖色", count: 1 }]);
   } finally {
     f.close();
@@ -356,7 +317,7 @@ test("renaming an asset keeps its real extension and rejects an empty name", () 
   const f = fixture();
   try {
     writeFileSync(f.source, PNG_A);
-    const asset = f.store.importPaths([f.source], { mode: "copy" }).assets[0];
+    const asset = upload(f.store, [f.source]).assets[0];
     assert.equal(f.store.renameAsset(asset.id, "海报·新名称").name, "海报·新名称.png");
     assert.equal(f.store.renameAsset(asset.id, "海报·再改.PNG").name, "海报·再改.png");
     assert.equal(f.store.renameAsset(asset.id, "版本1.2").name, "版本1.2.png");
@@ -385,7 +346,7 @@ test("forms are seeded once, extensible, and removable without touching item tag
     assert.throws(() => store.addForm("动效"), /已存在/);
     assert.throws(() => store.addForm("  "), /不能为空/);
 
-    store.importPaths([source], { mode: "copy", tags: ["动效"] });
+    upload(store, [source], { tags: ["动效"] });
     assert.equal(store.listForms().find((form) => form.name === "动效")?.count, 1);
 
     // 移除只出清单，内容组上的同名标签保留，计数随之归零（形态已不在清单）。
@@ -403,5 +364,33 @@ test("forms are seeded once, extensible, and removable without touching item tag
   } finally {
     store.close();
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a runtime moved from another machine resolves legacy absolute paths inside the new home", () => {
+  const f = fixture();
+  try {
+    writeFileSync(f.source, PNG_A);
+    const asset = upload(f.store, [f.source]).assets[0];
+    const home = f.store.paths.home;
+    f.store.close();
+    const db = new DatabaseSync(join(home, "db", "taste.sqlite"));
+    const stored = db.prepare("SELECT storage_path, preview_path FROM assets WHERE id = ?").get(asset.id) as { storage_path: string; preview_path: string };
+    assert.equal(stored.storage_path, `files/${asset.id}/source.png`);
+    db.prepare("UPDATE assets SET storage_path = ?, preview_path = ? WHERE id = ?")
+      .run(`/Users/someone/.local/share/taste/${stored.storage_path}`, `/Users/someone/.local/share/taste/${stored.preview_path}`, asset.id);
+    db.close();
+
+    const reopened = new LibraryStore(home);
+    try {
+      const original = reopened.resolveAssetPath(asset.id, "original").path;
+      assert.equal(original, join(home, "files", asset.id, "source.png"));
+      assert.equal(existsSync(original), true);
+      assert.equal(existsSync(reopened.resolveAssetPath(asset.id, "preview").path), true);
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
   }
 });

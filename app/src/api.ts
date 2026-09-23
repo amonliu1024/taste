@@ -53,11 +53,8 @@ export const api = {
   async layout(assetId: string, layout: { x: number; y: number; width: number; height: number }): Promise<AssetRecord> {
     return (await request<{ asset: AssetRecord }>(`/api/assets/${assetId}`, { method: "PATCH", body: JSON.stringify(layout) })).asset;
   },
-  async exportAsset(assetId: string, targetPath?: string): Promise<{ path?: string; cancelled?: boolean }> {
-    return request<{ path?: string; cancelled?: boolean }>(`/api/assets/${assetId}/export`, { method: "POST", body: JSON.stringify(targetPath ? { targetPath } : {}) });
-  },
-  async exportAssets(assetIds: string[]): Promise<{ paths?: string[]; cancelled?: boolean }> {
-    return request<{ paths?: string[]; cancelled?: boolean }>("/api/assets/export", { method: "POST", body: JSON.stringify({ assetIds }) });
+  exportUrl(assetIds: string[]): string {
+    return `/api/export?ids=${assetIds.map(encodeURIComponent).join(",")}`;
   },
   async moveAsset(assetId: string, targetItemId: string | null): Promise<AssetRecord> {
     return (await request<{ asset: AssetRecord }>(`/api/assets/${assetId}`, { method: "PATCH", body: JSON.stringify({ targetItemId }) })).asset;

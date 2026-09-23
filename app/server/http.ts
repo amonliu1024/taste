@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { extname, join, normalize } from "node:path";
 import type { AddressInfo } from "node:net";
 import { LibraryStore } from "./library.js";
+import { zipFiles } from "./zip.js";
 
 type Json = Record<string, unknown>;
 
@@ -48,7 +49,8 @@ async function body(request: IncomingMessage, limit = 90 * 1024 * 1024): Promise
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Json;
 }
 
-function assertLoopbackRequest(request: IncomingMessage): void {
+// 服务只监听回环地址；经反向代理（如 tailscale serve）访问时，只额外放行配置的公开地址。
+function assertAllowedRequest(request: IncomingMessage, publicUrl: URL | null): void {
   const host = request.headers.host;
   if (!host) throw new Error("请求缺少 Host。 ");
   let hostname: string;
@@ -57,8 +59,9 @@ function assertLoopbackRequest(request: IncomingMessage): void {
   } catch {
     throw new Error("请求 Host 无效。 ");
   }
-  if (!["127.0.0.1", "localhost", "[::1]"].includes(hostname)) {
-    throw new Error("Taste 只接受本机回环地址。 ");
+  const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(hostname);
+  if (!loopback && hostname !== publicUrl?.hostname) {
+    throw new Error("Taste 只接受本机回环地址或配置的公开地址。 ");
   }
 
   const origin = request.headers.origin;
@@ -69,7 +72,8 @@ function assertLoopbackRequest(request: IncomingMessage): void {
   } catch {
     throw new Error("拒绝无效来源。 ");
   }
-  if (parsedOrigin.protocol !== "http:" || parsedOrigin.host !== host) throw new Error("拒绝跨来源写入。 ");
+  const sameLoopbackOrigin = loopback && parsedOrigin.protocol === "http:" && parsedOrigin.host === host;
+  if (!sameLoopbackOrigin && parsedOrigin.origin !== publicUrl?.origin) throw new Error("拒绝跨来源写入。 ");
 }
 
 function match(path: string, pattern: RegExp): RegExpMatchArray | null {
@@ -97,13 +101,14 @@ export interface TasteHttpServer {
   store: LibraryStore;
 }
 
-export function createTasteHttpServer(options: { home?: string; webRoot?: string } = {}): TasteHttpServer {
+export function createTasteHttpServer(options: { home?: string; webRoot?: string; publicUrl?: string } = {}): TasteHttpServer {
   const store = new LibraryStore(options.home);
+  const publicUrl = options.publicUrl ? new URL(options.publicUrl) : null;
   const webRoot = options.webRoot ?? join(process.cwd(), "dist");
   const server = createServer(async (request, response) => {
     const method = request.method ?? "GET";
     try {
-      assertLoopbackRequest(request);
+      assertAllowedRequest(request, publicUrl);
       const url = new URL(request.url ?? "/", `http://${request.headers.host}`);
       const path = decodeURIComponent(url.pathname);
 
@@ -153,20 +158,6 @@ export function createTasteHttpServer(options: { home?: string; webRoot?: string
         json(response, 200, { items: store.reorderItems(Array.isArray(input.itemIds) ? input.itemIds.map(String) : []) });
         return;
       }
-      if (method === "POST" && path === "/api/import/paths") {
-        const input = await body(request);
-        json(response, 201, { item: store.importPaths(
-          Array.isArray(input.paths) ? input.paths.map(String) : [],
-          {
-            title: input.title === undefined ? undefined : String(input.title),
-            note: input.note === undefined ? undefined : String(input.note),
-            tags: Array.isArray(input.tags) ? input.tags.map(String) : [],
-            mode: input.mode === "copy" ? "copy" : "move",
-            itemId: input.itemId ? String(input.itemId) : undefined,
-          },
-        ) });
-        return;
-      }
       if (method === "POST" && path === "/api/import/uploads") {
         const input = await body(request);
         const files = Array.isArray(input.files) ? input.files.map((file) => {
@@ -212,17 +203,21 @@ export function createTasteHttpServer(options: { home?: string; webRoot?: string
         json(response, 200, { asset: assetActionMatch[2] === "trash" ? store.trashAsset(assetActionMatch[1]) : store.restoreAsset(assetActionMatch[1]) });
         return;
       }
-      if (method === "POST" && path === "/api/assets/export") {
-        const input = await body(request);
-        const targetDirectory = typeof input.targetDirectory === "string" && input.targetDirectory.trim() ? input.targetDirectory.trim() : undefined;
-        json(response, 200, store.exportAssets(Array.isArray(input.assetIds) ? input.assetIds.map(String) : [], targetDirectory));
-        return;
-      }
-      const exportMatch = match(path, /^\/api\/assets\/([^/]+)\/export$/);
-      if (method === "POST" && exportMatch) {
-        const input = await body(request);
-        const targetPath = typeof input.targetPath === "string" && input.targetPath.trim() ? input.targetPath.trim() : undefined;
-        json(response, 200, store.exportAsset(exportMatch[1], targetPath));
+      // 导出交给浏览器下载：单个素材给原文件，多个打成一个 zip。
+      if (method === "GET" && path === "/api/export") {
+        const files = store.exportFiles((url.searchParams.get("ids") ?? "").split(",").filter(Boolean));
+        if (files.length === 1) {
+          serveFile(response, files[0].path, { "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(files[0].name)}`, "cache-control": "no-store" });
+          return;
+        }
+        const archive = zipFiles(files);
+        response.writeHead(200, {
+          "content-type": "application/zip",
+          "content-length": archive.length,
+          "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(`Taste 导出 ${files.length} 个素材.zip`)}`,
+          "cache-control": "no-store",
+        });
+        response.end(archive);
         return;
       }
       if (method === "GET" && path === "/api/tags") {

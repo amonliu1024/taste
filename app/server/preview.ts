@@ -1,11 +1,27 @@
 import { copyFileSync, existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
-import { extname } from "node:path";
+import { dirname, extname, join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const CHROME_CANDIDATES = [
+  "/usr/bin/google-chrome",
+  "/usr/bin/chromium",
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/Applications/Chromium.app/Contents/MacOS/Chromium",
 ];
+// HEIC 用 HEVC 编码，sharp 自带的 libheif 不含该解码器，交给系统工具：Linux 用 libheif 的 heif-dec（1.17 及更早叫 heif-convert），macOS 用 sips。
+const HEIC_DECODERS: Array<{ command: string; args: (source: string, destination: string) => string[] }> = [
+  { command: "/usr/bin/heif-dec", args: (source, destination) => ["-q", "92", source, destination] },
+  { command: "/usr/bin/heif-convert", args: (source, destination) => ["-q", "92", source, destination] },
+  { command: "/opt/homebrew/bin/heif-dec", args: (source, destination) => ["-q", "92", source, destination] },
+  { command: "/usr/bin/sips", args: (source, destination) => ["-s", "format", "jpeg", "-s", "formatOptions", "92", source, "--out", destination] },
+];
+const IMAGE_WORKER = join(dirname(fileURLToPath(import.meta.url)), "image-worker.js");
+
+function image(args: string[]): string | null {
+  const result = spawnSync(process.execPath, [IMAGE_WORKER, ...args], { encoding: "utf8", timeout: 120_000 });
+  return result.status === 0 ? result.stdout : null;
+}
 
 // 预览图最长边的上限。注意：只有原图超过它才压缩，小图绝不放大（放大 = 糊）。
 // 画布可以把单张素材放到接近满屏，预览必须留够像素，否则一放大就发虚；
@@ -18,13 +34,10 @@ export interface Dimensions {
 }
 
 export function readImageDimensions(path: string): Dimensions | null {
-  const result = spawnSync("/usr/bin/sips", ["-g", "pixelWidth", "-g", "pixelHeight", path], {
-    encoding: "utf8",
-  });
-  if (result.status !== 0) return null;
-  const width = Number(result.stdout.match(/pixelWidth:\s*(\d+)/)?.[1]);
-  const height = Number(result.stdout.match(/pixelHeight:\s*(\d+)/)?.[1]);
-  return width > 0 && height > 0 ? { width, height } : null;
+  const output = image(["dimensions", path]);
+  if (!output) return null;
+  const { width, height } = JSON.parse(output) as { width?: number; height?: number };
+  return width && height && width > 0 && height > 0 ? { width, height } : null;
 }
 
 export interface CropBox {
@@ -58,30 +71,16 @@ interface Bitmap {
   pixel(x: number, y: number): number[];
 }
 
-// 解析 sips 输出的无压缩 BMP（24/32 位，行序可正可倒）。
-function parseBmp(data: Buffer): Bitmap | null {
-  if (data.length < 54 || data.toString("latin1", 0, 2) !== "BM") return null;
-  const offset = data.readUInt32LE(10);
-  const width = data.readInt32LE(18);
-  const rawHeight = data.readInt32LE(22);
-  const bitsPerPixel = data.readUInt16LE(28);
-  const compression = data.readUInt32LE(30);
-  if (width <= 0 || rawHeight === 0 || (bitsPerPixel !== 24 && bitsPerPixel !== 32) || (compression !== 0 && compression !== 3)) return null;
-  const height = Math.abs(rawHeight);
-  const bottomUp = rawHeight > 0;
-  const channels = bitsPerPixel / 8;
-  const stride = Math.ceil((width * bitsPerPixel) / 32) * 4;
-  if (offset + stride * height > data.length) return null;
+// 读取 image-worker 输出的无填充 RGB 原始像素（行序自上而下）。
+function rawBitmap(data: Buffer, width: number, height: number, channels: number): Bitmap | null {
+  if (width <= 0 || height <= 0 || data.length < width * height * channels) return null;
   return {
     width,
     height,
     channels,
     pixel(x, y) {
-      const row = bottomUp ? height - 1 - y : y;
-      const start = offset + row * stride + x * channels;
-      return channels === 4
-        ? [data[start], data[start + 1], data[start + 2], data[start + 3]]
-        : [data[start], data[start + 1], data[start + 2]];
+      const start = (y * width + x) * channels;
+      return Array.from(data.subarray(start, start + channels));
     },
   };
 }
@@ -144,11 +143,13 @@ function findContentEdges(bitmap: Bitmap): { edges: Record<Side, number>; sparse
 // 只产出裁切框，原图与预览文件都不改动；GIF 各帧内容不同，不参与检测。
 export function detectContentCrop(source: string, dimensions: Dimensions | null, probeBase: string): CropBox | null {
   if (!dimensions || extname(source).toLowerCase() === ".gif") return null;
-  const probe = `${probeBase}-probe.bmp`;
+  const probe = `${probeBase}-probe.raw`;
   try {
     const size = Math.min(PROBE_SIZE, Math.max(dimensions.width, dimensions.height));
-    if (!run(["-s", "format", "bmp", "-Z", String(size), source, "--out", probe]) || !existsSync(probe)) return null;
-    const bitmap = parseBmp(readFileSync(probe));
+    const output = image(["probe", source, String(size), probe]);
+    if (!output || !existsSync(probe)) return null;
+    const info = JSON.parse(output) as { width: number; height: number; channels: number };
+    const bitmap = rawBitmap(readFileSync(probe), info.width, info.height, info.channels);
     if (!bitmap) return null;
     const { edges, sparse } = findContentEdges(bitmap);
     const longSide = Math.max(bitmap.width, bitmap.height);
@@ -176,12 +177,14 @@ export function detectContentCrop(source: string, dimensions: Dimensions | null,
 
 // 浏览器无法直接显示的图片格式（如 iPhone 的 HEIC）在导入时转成 JPEG 保存。
 export function convertToJpeg(source: string, destination: string): boolean {
-  return run(["-s", "format", "jpeg", "-s", "formatOptions", "92", source, "--out", destination]) && existsSync(destination);
+  const decoder = HEIC_DECODERS.find((candidate) => existsSync(candidate.command));
+  if (!decoder) return false;
+  const result = spawnSync(decoder.command, decoder.args(source, destination), { encoding: "utf8", timeout: 120_000 });
+  return result.status === 0 && existsSync(destination);
 }
 
-function run(args: string[]): boolean {
-  const result = spawnSync("/usr/bin/sips", args, { encoding: "utf8" });
-  return result.status === 0;
+function render(format: "jpeg" | "png", source: string, destination: string, maxSize?: number): boolean {
+  return image([format, source, destination, ...(maxSize ? [String(maxSize)] : [])]) !== null && existsSync(destination);
 }
 
 // 生成图片预览，返回实际写出的文件路径（扩展名可能是 .png 或 .jpg），失败返回 null。
@@ -208,15 +211,12 @@ export function createImagePreview(source: string, destinationBase: string, dime
       }
     }
     const destination = destinationBase + ".jpg";
-    return run(["-s", "format", "jpeg", "-s", "formatOptions", "92", source, "--out", destination]) && existsSync(destination) ? destination : null;
+    return render("jpeg", source, destination) ? destination : null;
   }
 
   // 只有超过上限才压缩。
   const destination = destinationBase + (isPng ? ".png" : ".jpg");
-  const args = isPng
-    ? ["-s", "format", "png", "-Z", String(PREVIEW_CAP), source, "--out", destination]
-    : ["-s", "format", "jpeg", "-s", "formatOptions", "92", "-Z", String(PREVIEW_CAP), source, "--out", destination];
-  return run(args) && existsSync(destination) ? destination : null;
+  return render(isPng ? "png" : "jpeg", source, destination, PREVIEW_CAP) ? destination : null;
 }
 
 export function createHtmlPreview(source: string, destination: string): boolean {

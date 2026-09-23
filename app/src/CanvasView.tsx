@@ -665,25 +665,15 @@ export default function CanvasView({ item, allItems, onBack, onChange, onLibrary
     });
   }
 
-  // 导出素材：后端弹原生对话框选地址，把原文件复制一份过去。素材本身不改动，
-  // 所以不刷新画布；单个选“存储为”，多选选一个文件夹，取消则静默。
-  async function exportSelection() {
+  // 导出素材：交给浏览器下载，单个是原文件，多个打成一个 zip。素材本身不改动，所以不刷新画布。
+  function exportSelection() {
     const ids = [...selectedIds];
     if (ids.length === 0) return;
-    try {
-      if (ids.length === 1) {
-        const result = await api.exportAsset(ids[0]);
-        if (result.cancelled) return;
-        if (result.path) onSuccess(`已导出到 ${result.path}`);
-        return;
-      }
-      const result = await api.exportAssets(ids);
-      if (result.cancelled) return;
-      const directory = result.paths?.[0]?.replace(/\/[^/]*$/, "") ?? "";
-      if (result.paths?.length) onSuccess(`已导出 ${result.paths.length} 个素材到 ${directory}`);
-    } catch (error) {
-      onError(error instanceof Error ? error.message : "导出失败。 ");
-    }
+    const link = document.createElement("a");
+    link.href = api.exportUrl(ids);
+    link.download = "";
+    link.click();
+    onSuccess(ids.length === 1 ? "已开始下载素材" : `已开始下载 ${ids.length} 个素材的压缩包`);
   }
 
   // 从原图地址读取完整分辨率内容。浏览器能直接写入原格式时保留原文件字节；
@@ -923,7 +913,7 @@ export default function CanvasView({ item, allItems, onBack, onChange, onLibrary
                       onSelect={(targetItemId) => void actOnSelection((id) => api.moveAsset(id, targetItemId))}
                     />
                   )}
-                  <button title="导出素材" aria-label="导出素材" onClick={() => void exportSelection()}><ExportIcon /></button>
+                  <button title="导出素材" aria-label="导出素材" onClick={exportSelection}><ExportIcon /></button>
                   <ConfirmPopover
                     message={selectedIds.length > 1 ? `将这 ${selectedIds.length} 个素材移到废纸篓？` : "将这个素材移到废纸篓？"}
                     onConfirm={() => void actOnSelection((id) => api.trashAsset(id))}
