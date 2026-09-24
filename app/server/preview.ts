@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -183,40 +183,17 @@ export function convertToJpeg(source: string, destination: string): boolean {
   return result.status === 0 && existsSync(destination);
 }
 
-function render(format: "jpeg" | "png", source: string, destination: string, maxSize?: number): boolean {
-  return image([format, source, destination, ...(maxSize ? [String(maxSize)] : [])]) !== null && existsSync(destination);
-}
-
-// 生成图片预览，返回实际写出的文件路径（扩展名可能是 .png 或 .jpg），失败返回 null。
+// 生成图片预览，返回写出的 .webp 路径，失败返回 null。
 // 规则：
-// - 小图（最长边 <= PREVIEW_CAP）绝不放大，直接保留原始分辨率；
-// - PNG 源保留 PNG，守住 UI 截图的锐利边缘、文字和透明通道；
-// - JPEG 源保持 JPEG，只有超过上限才压缩，质量 92。
+// - 小图（最长边 <= PREVIEW_CAP）绝不放大，保留原始分辨率，只转码；
+// - 超过上限才压缩到 PREVIEW_CAP；
+// - 一律输出 WebP（质量 85）：同样清晰度下体积约为 JPEG/PNG 的三成，透明通道也能保留。
+//   复制和导出始终取原图，预览格式不影响用户拿到的文件。
 export function createImagePreview(source: string, destinationBase: string, dimensions: Dimensions | null): string | null {
-  const extension = extname(source).toLowerCase();
-  const isPng = extension === ".png";
-  const isJpeg = extension === ".jpg" || extension === ".jpeg";
   const maxDimension = dimensions ? Math.max(dimensions.width, dimensions.height) : Number.POSITIVE_INFINITY;
-  const needsDownscale = maxDimension > PREVIEW_CAP;
-
-  if (!needsDownscale) {
-    // 保持原始分辨率：能直接复制的就复制，其余（webp/heic 等）转 JPEG 但不缩放。
-    if (isPng || isJpeg) {
-      const destination = destinationBase + (isPng ? ".png" : ".jpg");
-      try {
-        copyFileSync(source, destination);
-        return destination;
-      } catch {
-        return null;
-      }
-    }
-    const destination = destinationBase + ".jpg";
-    return render("jpeg", source, destination) ? destination : null;
-  }
-
-  // 只有超过上限才压缩。
-  const destination = destinationBase + (isPng ? ".png" : ".jpg");
-  return render(isPng ? "png" : "jpeg", source, destination, PREVIEW_CAP) ? destination : null;
+  const destination = destinationBase + ".webp";
+  const args = ["webp", source, destination, ...(maxDimension > PREVIEW_CAP ? [String(PREVIEW_CAP)] : [])];
+  return image(args) !== null && existsSync(destination) ? destination : null;
 }
 
 export function createHtmlPreview(source: string, destination: string): boolean {
@@ -238,7 +215,7 @@ export function createHtmlPreview(source: string, destination: string): boolean 
   return result.status === 0 && existsSync(destination);
 }
 
-// destinationBase 不带扩展名；返回实际生成的预览路径（图片可能是 .png/.jpg，HTML 是 .jpg）。
+// destinationBase 不带扩展名；返回实际生成的预览路径（图片是 .webp，HTML 是 .jpg）。
 export function createPreview(kind: "image" | "html", source: string, destinationBase: string, dimensions: Dimensions | null): string | null {
   try {
     if (kind === "html") {

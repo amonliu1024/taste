@@ -12,6 +12,7 @@
 - CLI 设置 `TASTE_URL` 后连接远程服务；`taste import` 与 `taste asset add` 改为上传文件内容，入库后默认删除本机源文件。
 - 导出改为浏览器下载：单个素材下载原文件，多选下载一个 zip。
 - 数据库改存相对路径，Runtime 目录可以整体迁移到另一台机器，旧库打开时自动转换。
+- 图片预览统一生成 WebP（质量 85，尺寸规则不变），体积约为原先的三成；复制与导出仍取原图。既有素材需执行 `taste regenerate-previews` 重建预览。
 
 ### Removed
 

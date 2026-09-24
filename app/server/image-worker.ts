@@ -19,12 +19,11 @@ async function main(): Promise<void> {
     process.stdout.write(JSON.stringify({ width: info.width, height: info.height, channels: info.channels }));
     return;
   }
-  if (operation === "jpeg" || operation === "png") {
+  if (operation === "webp") {
     const [destination, size] = rest;
     let image = sharp(source).keepMetadata();
     if (size) image = image.resize(inside(Number(size)));
-    image = operation === "jpeg" ? image.jpeg({ quality: 92 }) : image.png();
-    await image.toFile(destination);
+    await image.webp({ quality: 85 }).toFile(destination);
     return;
   }
   throw new Error(`未知操作：${operation}`);

@@ -814,7 +814,7 @@ export class LibraryStore {
       incomingFile = converted;
     }
     const dimensions = kind === "image" ? readImageDimensions(incomingFile) : { width: 1440, height: 900 };
-    // 预览可能是 .png 或 .jpg，扩展名由 createPreview 根据源文件决定。
+    // 预览扩展名由 createPreview 决定：图片 .webp，HTML .jpg。
     const previewBase = join(this.paths.incoming, `${id}-preview`);
     const crop = kind === "image" ? detectContentCrop(incomingFile, dimensions, previewBase) : null;
     const canvasWidth = 420;
