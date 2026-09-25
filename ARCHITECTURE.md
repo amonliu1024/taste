@@ -23,7 +23,7 @@ taste CLI ────────┘                                  v
 ## 模块
 
 - `app/src/`：素材墙、抽屉和无限画布，只消费 HTTP 返回的资源表示；导出通过浏览器下载 `/api/export`。
-- `app/cli/`：除本机模式的启动、停止和状态查询外，所有命令都调用 `TASTE_URL` 或本机的 HTTP 服务；导入读取本机文件后上传，入库成功再按模式删除本机源文件；`taste backup` 不经 HTTP，直接通过 SSH 与 rsync 拉取服务器 Runtime，数据库快照由服务器端 SQLite 在线备份生成。
+- `app/cli/`：素材查询、导入与编辑通过 `TASTE_URL` 或本机的 HTTP 服务访问 `LibraryStore`；导入读取本机文件后上传，入库成功再按模式删除本机源文件。本机启停由 CLI 管理；`regenerate-previews` 在服务所在机器直接调用 `LibraryStore` 重建预览；`taste backup` 通过 SSH 生成 SQLite 在线快照，再用 rsync 拉取服务器 Runtime。调用路径见 [CLI 实现](app/cli/index.ts)。
 - `app/server/http.ts`：路由、请求校验和访问边界（回环地址加 `TASTE_PUBLIC_URL`），导出单个原文件或 zip。
 - `app/server/zip.ts`：以 STORE 方式打包多选导出，文件名按 UTF-8 标记写入。
 - `app/server/library.ts`：内容组、素材、排序、布局、路径与文件生命周期的唯一技术 Owner，也承担预览重建（`regeneratePreviews`）。
@@ -47,10 +47,12 @@ taste CLI ────────┘                                  v
 ```text
 db/taste.sqlite
 files/<asset-id>/<stored-name>
-previews/<asset-id>.<jpg|png>
+previews/<asset-id>.<webp|jpg>
 run/server.json
 logs/server.log
 ```
+
+[预览生成器](app/server/preview.ts)为图片生成 WebP 预览，为 HTML 生成 JPG 截图；历史预览可能保留旧格式，执行 `regenerate-previews` 后按当前规则重建。
 
 数据库中的文件路径都相对 Runtime 根保存，Runtime 可以整体搬到另一台机器；打开旧库时自动把绝对路径按固定布局转成相对路径。正式素材、SQLite、预览、PID 和日志都不能进入 Git。测试必须使用临时 `TASTE_HOME`。
 

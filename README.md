@@ -103,7 +103,7 @@ scripts/deploy-skills.sh
 
 ## 架构与技术栈
 
-只监听回环地址、经反向代理对外的单人应用。React 页面和 `taste` CLI 走同一个 HTTP 服务，SQLite 与 Runtime 文件不是公共接口——CLI 除启动、停止和状态查询外的所有命令都调 HTTP，因此两个入口永远看到同一份状态。
+只监听回环地址、经反向代理对外的单人应用。React 页面和 `taste` CLI 的素材查询、导入与编辑通过同一个 HTTP 服务访问数据；预览重建与备份另走本机或 SSH 路径，见 [ARCHITECTURE.md](ARCHITECTURE.md#模块)。SQLite 与 Runtime 文件不是公共接口。
 
 `app/server/http.ts` 负责路由、请求校验和访问边界，`app/server/library.ts` 是内容组、素材、排序、布局与文件生命周期的唯一技术 Owner，`app/server/preview.ts` 经 sharp 子进程生成图片预览并在可用时调 Chrome 截 HTML，`app/server/runtime.ts` 解析并创建仓库外的 Runtime 目录。模块关系见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
