@@ -336,13 +336,13 @@ test("forms are seeded once, extensible, and removable without touching item tag
   let store = new LibraryStore(runtime);
   try {
     const seeded = store.listForms();
-    assert.equal(seeded.length, 14);
-    assert.deepEqual([seeded[0].name, seeded[13].name], ["网页", "实物素材"]);
+    assert.equal(seeded.length, 11);
+    assert.deepEqual([seeded[0].name, seeded[10].name], ["网页", "工业设计"]);
     assert.equal(seeded[0].count, 0);
     assert.notEqual(seeded[0].description, "");
 
-    assert.equal(store.addForm("动效", "动效与视频类界面").length, 15);
-    assert.equal(store.listForms()[14].name, "动效");
+    assert.equal(store.addForm("动效", "动效与视频类界面").length, 12);
+    assert.equal(store.listForms()[11].name, "动效");
     assert.throws(() => store.addForm("动效"), /已存在/);
     assert.throws(() => store.addForm("  "), /不能为空/);
 
@@ -351,7 +351,7 @@ test("forms are seeded once, extensible, and removable without touching item tag
 
     // 移除只出清单，内容组上的同名标签保留，计数随之归零（形态已不在清单）。
     const remaining = store.removeForm("动效");
-    assert.equal(remaining.length, 14);
+    assert.equal(remaining.length, 11);
     assert.equal(store.listItems()[0].tags.includes("动效"), true);
     assert.throws(() => store.removeForm("动效"), /不存在/);
 

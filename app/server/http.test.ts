@@ -95,7 +95,7 @@ test("HTTP manages the forms list", async () => {
   const base = `http://127.0.0.1:${address.port}`;
   try {
     const listed = await (await fetch(`${base}/api/forms`)).json() as { forms: Array<{ name: string; description: string; count: number }> };
-    assert.equal(listed.forms.length, 14);
+    assert.equal(listed.forms.length, 11);
     assert.equal(listed.forms[0].name, "网页");
 
     const added = await fetch(`${base}/api/forms`, {
@@ -104,7 +104,7 @@ test("HTTP manages the forms list", async () => {
       body: JSON.stringify({ name: "动效", description: "动效与视频类界面" }),
     });
     assert.equal(added.status, 201);
-    assert.equal(((await added.json()) as { forms: unknown[] }).forms.length, 15);
+    assert.equal(((await added.json()) as { forms: unknown[] }).forms.length, 12);
 
     const duplicate = await fetch(`${base}/api/forms`, {
       method: "POST",
@@ -115,7 +115,7 @@ test("HTTP manages the forms list", async () => {
 
     const removed = await fetch(`${base}/api/forms/${encodeURIComponent("动效")}`, { method: "DELETE" });
     assert.equal(removed.status, 200);
-    assert.equal(((await removed.json()) as { forms: unknown[] }).forms.length, 14);
+    assert.equal(((await removed.json()) as { forms: unknown[] }).forms.length, 11);
 
     const missing = await fetch(`${base}/api/forms/${encodeURIComponent("不存在")}`, { method: "DELETE" });
     assert.equal(missing.status, 400);
