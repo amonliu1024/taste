@@ -1,9 +1,17 @@
-#!/bin/zsh
-set -euo pipefail
-
-APP_DIR="${0:A:h:h}"
-if [[ ! -f "$APP_DIR/dist-node/cli/index.js" || ! -f "$APP_DIR/dist/index.html" ]]; then
-  cd "$APP_DIR"
-  pnpm build
+#!/bin/sh
+set -eu
+# Resolve an installed symlink as well as a direct invocation from the source tree.
+taste_entry="$0"
+while [ -L "$taste_entry" ]; do
+  taste_link=$(readlink "$taste_entry")
+  case "$taste_link" in
+    /*) taste_entry="$taste_link" ;;
+    *) taste_entry="$(dirname "$taste_entry")/$taste_link" ;;
+  esac
+done
+taste_app_dir=$(CDPATH= cd -- "$(dirname -- "$taste_entry")/.." && pwd)
+if [ ! -f "$taste_app_dir/dist-node/cli/index.js" ]; then
+  echo 'Taste 客户端尚未构建。请先在源码 app/ 执行 pnpm build，再运行客户端安装入口。' >&2
+  exit 1
 fi
-exec node "$APP_DIR/dist-node/cli/index.js" "$@"
+exec node "$taste_app_dir/dist-node/cli/index.js" "$@"

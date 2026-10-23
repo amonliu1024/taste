@@ -8,7 +8,7 @@ Taste 是一个单人、Agent 友好的视觉内容库，部署在自己的服�
 
 Taste 把图片和单体 HTML 收进统一 Runtime：用极简素材墙浏览，用无限画布查看和整理内容组，标题、备注、标签、素材归属和画布布局全是真实持久化数据——不是浏览器缓存，也不是一份会飘的 JSON。同一套数据有一个完整的 CLI，所以「帮我把这半年攒的仪表盘参考归到一组、加上标签」是一句话能交出去的活。
 
-单人自用，日常可用。服务只监听回环地址，由反向代理（如 `tailscale serve`）把一个私有 HTTPS 地址转给它，访问控制交给私有网络，Taste 本身没有账号与登录。数据只在服务器上保存一份，用 `taste backup` 手动把它拉回本机备份。
+单人自用，日常可用。服务只监听回环地址，由反向代理（如 `tailscale serve`）把一个私有 HTTPS 地址转给它，访问控制由私有网络与客户端凭据共同承担；网页通过访问凭据建立会话。数据只在服务器上保存一份，用 `taste backup` 手动把它拉回本机备份。
 
 ## 主要能力
 
@@ -45,6 +45,7 @@ cd app && pnpm install --frozen-lockfile && pnpm build
 User=<你的用户>
 WorkingDirectory=/path/to/taste/app
 Environment=TASTE_PUBLIC_URL=https://lab.example.ts.net:10000
+Environment=TASTE_CLIENTS_FILE=/etc/taste/clients.json
 ExecStart=/usr/local/bin/node dist-node/server/index.js
 Restart=on-failure
 ```
@@ -61,7 +62,7 @@ tailscale serve --bg --https=10000 http://127.0.0.1:4178
 git pull --ff-only && cd app && pnpm install --frozen-lockfile && pnpm build && sudo systemctl restart taste
 ```
 
-使用端把 `app/bin/taste` 链接进 PATH，并在 shell 配置里设置 `TASTE_URL` 为同一地址，所有命令就都作用于服务器数据：`taste` 或 `taste open` 打开浏览器，`taste status` 查看连通性；`start`、`stop`、`regenerate-previews` 需在服务器上执行。不设置 `TASTE_URL` 时 CLI 在本机 `127.0.0.1:4178` 启动服务，用于开发。完整命令见 `taste help`，全部配置项见 [ARCHITECTURE.md](ARCHITECTURE.md#配置)。
+使用端运行 `sh scripts/install-client.sh` 安装已构建的客户端，在仓外 `~/.config/taste/client.json` 配置 `url`、`token`，文件权限设为 600；`TASTE_CONFIG` 可指定路径，`TASTE_URL` / `TASTE_TOKEN` 可分别覆盖字段。客户端只连接服务器，缺配置和断线都会报错，不启动本机服务。`taste config` 查看配置来源，`taste doctor` 检查连接和鉴权；网页首次输入访问凭据后继续使用素材墙与画布。服务端同时配置仓外凭据文件 `TASTE_CLIENTS_FILE`。安装分发、写入重试、凭据配置及切换步骤见[客户端连接与服务维护](docs/operations/client-server.md)。
 
 ## 典型用法
 
@@ -113,7 +114,8 @@ scripts/deploy-skills.sh
 
 ```bash
 cd app
-pnpm dev
+# 前端热更新需另行启动临时服务；完整页面直接用生产构建验证
+TASTE_HOME="$(mktemp -d)" node dist-node/server/index.js
 pnpm test
 ```
 

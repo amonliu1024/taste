@@ -1,11 +1,14 @@
 import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readClients } from "./auth.js";
 import { createTasteHttpServer } from "./http.js";
 
 export async function startServer(): Promise<void> {
+  if (!process.env.TASTE_PUBLIC_URL && !process.env.TASTE_HOME) throw new Error("隔离开发服务必须显式设置临时 TASTE_HOME；正式服务需配置 TASTE_PUBLIC_URL 和 TASTE_CLIENTS_FILE。");
+  const clients = readClients(process.env.TASTE_CLIENTS_FILE);
   const webRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "dist");
-  const server = createTasteHttpServer({ webRoot, publicUrl: process.env.TASTE_PUBLIC_URL || undefined });
+  const server = createTasteHttpServer({ webRoot, publicUrl: process.env.TASTE_PUBLIC_URL || undefined, clients });
   const address = await server.listen(Number(process.env.TASTE_PORT ?? 4178));
   writeFileSync(server.store.paths.serverInfo, JSON.stringify({ pid: process.pid, port: address.port, startedAt: new Date().toISOString() }), { mode: 0o600 });
 

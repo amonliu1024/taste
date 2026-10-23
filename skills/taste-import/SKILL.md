@@ -7,7 +7,7 @@ description: 把截图、设计参考图或单体 HTML 收进 Taste 视觉参考
 
 Taste 是部署在自己服务器上的单人视觉参考库：一个**内容组**是一份参考，组里放同一来源、会被一起看的素材；分类靠标签，搜索匹配**标题、备注和标签**，不匹配文件名。
 
-CLI 是本仓库的 `app/bin/taste`（本 Skill 目录上两级；未链接到 PATH 时用完整路径，下文写作 `taste`）。先跑 `taste status`：设置了 `TASTE_URL` 时它检查与服务器的连通性，连不上就停下告诉用户，不要尝试 `taste start`；未设置时本机未运行才 `taste start`。所有写入都走 CLI，不碰 Runtime 里的文件与 SQLite。
+CLI 是本仓库的 `app/bin/taste`（本 Skill 目录上两级；未链接到 PATH 时用完整路径，下文写作 `taste`）。先跑 `taste doctor` 检查连接与鉴权；缺配置、断线或凭据错误时报告问题。客户端只连接服务器；连接配置见 `taste config`，修复后再继续。所有写入都走 CLI，不碰 Runtime 里的文件与 SQLite。
 
 ## 导入流程
 

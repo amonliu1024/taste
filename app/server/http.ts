@@ -4,8 +4,11 @@ import { extname, join, normalize } from "node:path";
 import type { AddressInfo } from "node:net";
 import { LibraryStore } from "./library.js";
 import { zipFiles } from "./zip.js";
+import { Access, HttpError, LOGIN_PAGE } from "./auth.js";
+import { createHash } from "node:crypto";
 
 type Json = Record<string, unknown>;
+const HTML_SANDBOX = "sandbox allow-scripts; default-src 'self' data: blob: https:; style-src 'unsafe-inline' 'self' https:; script-src 'unsafe-inline' 'unsafe-eval' 'self' https:; img-src 'self' data: blob: https:; font-src 'self' data: https:";
 
 const CONTENT_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -46,7 +49,9 @@ async function body(request: IncomingMessage, limit = 90 * 1024 * 1024): Promise
     chunks.push(buffer);
   }
   if (chunks.length === 0) return {};
-  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Json;
+  const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("请求正文必须是 JSON 对象。");
+  return parsed as Json;
 }
 
 // 服务只监听回环地址；经反向代理（如 tailscale serve）访问时，只额外放行配置的公开地址。
@@ -101,7 +106,9 @@ export interface TasteHttpServer {
   store: LibraryStore;
 }
 
-export function createTasteHttpServer(options: { home?: string; webRoot?: string; publicUrl?: string } = {}): TasteHttpServer {
+export function createTasteHttpServer(options: { home?: string; webRoot?: string; publicUrl?: string; clients?: Record<string, string> } = {}): TasteHttpServer {
+  if (options.publicUrl && !options.clients) throw new Error("对外服务必须配置客户端凭据文件 TASTE_CLIENTS_FILE。");
+  const access = new Access(options.clients);
   const store = new LibraryStore(options.home);
   const publicUrl = options.publicUrl ? new URL(options.publicUrl) : null;
   const webRoot = options.webRoot ?? join(process.cwd(), "dist");
@@ -112,8 +119,47 @@ export function createTasteHttpServer(options: { home?: string; webRoot?: string
       const url = new URL(request.url ?? "/", `http://${request.headers.host}`);
       const path = decodeURIComponent(url.pathname);
 
+      if (path === "/auth" && method === "POST") {
+        if (request.headers["content-type"] !== "application/x-www-form-urlencoded") throw new HttpError(400, "请通过访问页面提交凭据。");
+        const chunks: Buffer[] = [];
+        let size = 0;
+        for await (const chunk of request) {
+          size += chunk.length;
+          if (size > 4096) throw new HttpError(413, "凭据过长。");
+          chunks.push(Buffer.from(chunk));
+        }
+        const token = new URLSearchParams(Buffer.concat(chunks).toString("utf8")).get("token") ?? "";
+        const cookie = access.session(token, publicUrl?.protocol === "https:");
+        response.writeHead(303, { location: "/", "set-cookie": cookie, "cache-control": "no-store" });
+        response.end();
+        return;
+      }
+      // Liveness stays usable by the existing deployment check; no Runtime details leak.
+      if (method === "GET" && path === "/api/health" && !request.headers.authorization && !request.headers.cookie) {
+        json(response, 200, { ok: true });
+        return;
+      }
+      let client: string;
+      try { client = access.authenticate(request); }
+      catch (error) {
+        if (method === "GET" && path === "/") {
+          response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'", "referrer-policy": "same-origin" });
+          response.end(LOGIN_PAGE);
+          return;
+        }
+        throw error;
+      }
+      const input = (["POST", "PATCH"].includes(method) || (method === "DELETE" && (Number(request.headers["content-length"]) > 0 || request.headers["transfer-encoding"]))) ? await body(request) : {};
+      const key = request.headers["idempotency-key"];
+      const digest = createHash("sha256").update(JSON.stringify([method, path, input])).digest("hex");
+      const mutate = (status: number, action: () => unknown) => {
+        const result = store.executeRequest(key, client, digest, () => ({ status, body: action() }));
+        if (key) response.setHeader("idempotency-key", key);
+        json(response, result.status, result.body);
+      };
+
       if (method === "GET" && path === "/api/health") {
-        json(response, 200, { ok: true, pid: process.pid, home: store.paths.home });
+        json(response, 200, { ok: true });
         return;
       }
       if (method === "GET" && path === "/api/items") {
@@ -121,12 +167,11 @@ export function createTasteHttpServer(options: { home?: string; webRoot?: string
         return;
       }
       if (method === "POST" && path === "/api/items") {
-        const input = await body(request);
-        json(response, 201, { item: store.createItem(
+        mutate(201, () => ({ item: store.createItem(
           String(input.title ?? ""),
           String(input.note ?? ""),
           Array.isArray(input.tags) ? input.tags.map(String) : [],
-        ) });
+        ) }));
         return;
       }
       const itemMatch = match(path, /^\/api\/items\/([^/]+)$/);
@@ -135,72 +180,67 @@ export function createTasteHttpServer(options: { home?: string; webRoot?: string
         return;
       }
       if (method === "PATCH" && itemMatch) {
-        const input = await body(request);
-        json(response, 200, { item: store.updateItem(itemMatch[1], {
+        mutate(200, () => ({ item: store.updateItem(itemMatch[1], {
           title: input.title === undefined ? undefined : String(input.title),
           note: input.note === undefined ? undefined : String(input.note),
           tags: Array.isArray(input.tags) ? input.tags.map(String) : undefined,
-        }) });
+        }) }));
         return;
       }
       const itemFrontMatch = match(path, /^\/api\/items\/([^/]+)\/front$/);
       if (method === "POST" && itemFrontMatch) {
-        json(response, 200, { items: store.bringItemToFront(itemFrontMatch[1]) });
+        mutate(200, () => ({ items: store.bringItemToFront(itemFrontMatch[1]) }));
         return;
       }
       const itemBeforeMatch = match(path, /^\/api\/items\/([^/]+)\/before\/([^/]+)$/);
       if (method === "POST" && itemBeforeMatch) {
-        json(response, 200, { items: store.moveItemBefore(itemBeforeMatch[1], itemBeforeMatch[2]) });
+        mutate(200, () => ({ items: store.moveItemBefore(itemBeforeMatch[1], itemBeforeMatch[2]) }));
         return;
       }
       if (method === "POST" && path === "/api/items/reorder") {
-        const input = await body(request);
-        json(response, 200, { items: store.reorderItems(Array.isArray(input.itemIds) ? input.itemIds.map(String) : []) });
+        mutate(200, () => ({ items: store.reorderItems(Array.isArray(input.itemIds) ? input.itemIds.map(String) : []) }));
         return;
       }
       if (method === "POST" && path === "/api/import/uploads") {
-        const input = await body(request);
         const files = Array.isArray(input.files) ? input.files.map((file) => {
           const candidate = file as Json;
           return { name: String(candidate.name ?? ""), data: String(candidate.data ?? "") };
         }) : [];
-        json(response, 201, { item: store.importUploads(files, {
+        mutate(201, () => ({ item: store.importUploads(files, {
           title: input.title === undefined ? undefined : String(input.title),
           note: input.note === undefined ? undefined : String(input.note),
           tags: Array.isArray(input.tags) ? input.tags.map(String) : [],
           itemId: input.itemId ? String(input.itemId) : undefined,
-        }) });
+        }) }));
         return;
       }
       const itemTrashMatch = match(path, /^\/api\/items\/([^/]+)\/(trash|restore)$/);
       if (method === "POST" && itemTrashMatch) {
-        json(response, 200, { item: itemTrashMatch[2] === "trash" ? store.trashItem(itemTrashMatch[1]) : store.restoreItem(itemTrashMatch[1]) });
+        mutate(200, () => ({ item: itemTrashMatch[2] === "trash" ? store.trashItem(itemTrashMatch[1]) : store.restoreItem(itemTrashMatch[1]) }));
         return;
       }
       const assetMatch = match(path, /^\/api\/assets\/([^/]+)$/);
       if (method === "PATCH" && assetMatch) {
-        const input = await body(request);
         if (["x", "y", "width", "height"].every((key) => typeof input[key] === "number")) {
-          json(response, 200, { asset: store.updateLayout(assetMatch[1], {
+          mutate(200, () => ({ asset: store.updateLayout(assetMatch[1], {
             x: Number(input.x), y: Number(input.y), width: Number(input.width), height: Number(input.height),
-          }) });
+          }) }));
         } else if (typeof input.name === "string") {
-          json(response, 200, { asset: store.renameAsset(assetMatch[1], input.name) });
+          mutate(200, () => ({ asset: store.renameAsset(assetMatch[1], String(input.name)) }));
         } else {
           const target = input.targetItemId === null || input.targetItemId === "staged" ? null : String(input.targetItemId ?? "");
-          json(response, 200, { asset: store.moveAsset(assetMatch[1], target || null) });
+          mutate(200, () => ({ asset: store.moveAsset(assetMatch[1], target || null) }));
         }
         return;
       }
       const assetCropMatch = match(path, /^\/api\/assets\/([^/]+)\/crop$/);
       if (method === "POST" && assetCropMatch) {
-        const input = await body(request);
-        json(response, 200, { asset: store.setAssetCrop(assetCropMatch[1], input.enabled !== false) });
+        mutate(200, () => ({ asset: store.setAssetCrop(assetCropMatch[1], input.enabled !== false) }));
         return;
       }
       const assetActionMatch = match(path, /^\/api\/assets\/([^/]+)\/(trash|restore)$/);
       if (method === "POST" && assetActionMatch) {
-        json(response, 200, { asset: assetActionMatch[2] === "trash" ? store.trashAsset(assetActionMatch[1]) : store.restoreAsset(assetActionMatch[1]) });
+        mutate(200, () => ({ asset: assetActionMatch[2] === "trash" ? store.trashAsset(assetActionMatch[1]) : store.restoreAsset(assetActionMatch[1]) }));
         return;
       }
       // 导出交给浏览器下载：单个素材给原文件，多个打成一个 zip。
@@ -229,13 +269,12 @@ export function createTasteHttpServer(options: { home?: string; webRoot?: string
         return;
       }
       if (method === "POST" && path === "/api/forms") {
-        const input = await body(request);
-        json(response, 201, { forms: store.addForm(String(input.name ?? ""), String(input.description ?? "")) });
+        mutate(201, () => ({ forms: store.addForm(String(input.name ?? ""), String(input.description ?? "")) }));
         return;
       }
       const formMatch = match(path, /^\/api\/forms\/([^/]+)$/);
       if (method === "DELETE" && formMatch) {
-        json(response, 200, { forms: store.removeForm(formMatch[1]) });
+        mutate(200, () => ({ forms: store.removeForm(formMatch[1]) }));
         return;
       }
       if (method === "GET" && path === "/api/staged") {
@@ -243,13 +282,12 @@ export function createTasteHttpServer(options: { home?: string; webRoot?: string
         return;
       }
       if (method === "POST" && path === "/api/staged/items") {
-        const input = await body(request);
-        json(response, 201, { item: store.createItemFromStaged(
+        mutate(201, () => ({ item: store.createItemFromStaged(
           Array.isArray(input.assetIds) ? input.assetIds.map(String) : [],
           String(input.title ?? ""),
           String(input.note ?? ""),
           Array.isArray(input.tags) ? input.tags.map(String) : [],
-        ) });
+        ) }));
         return;
       }
       if (method === "GET" && path === "/api/trash") {
@@ -257,15 +295,14 @@ export function createTasteHttpServer(options: { home?: string; webRoot?: string
         return;
       }
       if (method === "POST" && path === "/api/trash/empty") {
-        const input = await body(request);
-        json(response, 200, store.emptyTrash(String(input.confirm ?? "")));
+        mutate(200, () => (store.emptyTrash(String(input.confirm ?? ""))));
         return;
       }
 
       const mediaMatch = match(path, /^\/media\/([^/]+)\/(original|preview)$/);
       if (method === "GET" && mediaMatch) {
         const file = store.resolveAssetPath(mediaMatch[1], mediaMatch[2] as "original" | "preview");
-        serveFile(response, file.path, { "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(file.name)}` });
+        serveFile(response, file.path, { "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(file.name)}`, ...(file.kind === "html" ? { "content-security-policy": HTML_SANDBOX } : {}) });
         return;
       }
       const htmlMatch = match(path, /^\/html\/([^/]+)$/);
@@ -273,7 +310,7 @@ export function createTasteHttpServer(options: { home?: string; webRoot?: string
         const file = store.resolveAssetPath(htmlMatch[1], "original");
         if (file.kind !== "html") throw new Error("该文件不是 HTML。 ");
         serveFile(response, file.path, {
-          "content-security-policy": "sandbox allow-scripts; default-src 'self' data: blob: https:; style-src 'unsafe-inline' 'self' https:; script-src 'unsafe-inline' 'unsafe-eval' 'self' https:; img-src 'self' data: blob: https:; font-src 'self' data: https:",
+          "content-security-policy": HTML_SANDBOX,
           "cache-control": "no-store",
         });
         return;
@@ -295,7 +332,7 @@ export function createTasteHttpServer(options: { home?: string; webRoot?: string
       }
       json(response, 404, { error: "未找到。" });
     } catch (error) {
-      json(response, 400, { error: errorMessage(error) });
+      json(response, error instanceof HttpError ? error.status : 400, { error: errorMessage(error) });
     }
   });
 

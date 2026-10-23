@@ -13,6 +13,7 @@ import {
 import { basename, dirname, extname, isAbsolute, join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { convertToJpeg, createPreview, detectContentCrop, readImageDimensions, type CropBox } from "./preview.js";
+import { HttpError } from "./auth.js";
 import { ensureRuntime, getRuntimePaths, type RuntimePaths } from "./runtime.js";
 
 // 画布尺寸上限：双击还原原始尺寸时，长边上万像素的原图也要能完整落到画布上。
@@ -141,6 +142,7 @@ function normalizeTags(tags: string[]): string[] {
 export class LibraryStore {
   readonly paths: RuntimePaths;
   private readonly db: DatabaseSync;
+  private effects: { rollback: Array<() => void>; commit: Array<() => void> } | null = null;
 
   constructor(homeOverride?: string) {
     this.paths = ensureRuntime(getRuntimePaths(homeOverride));
@@ -153,10 +155,49 @@ export class LibraryStore {
     this.db.close();
   }
 
+  executeRequest(key: string | string[] | undefined, client: string, digest: string, action: () => { status: number; body: unknown }): { status: number; body: unknown } {
+    if (key === undefined) return action();
+    if (typeof key !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(key)) throw new HttpError(400, "请求编号必须是 UUID。");
+    this.db.exec("BEGIN IMMEDIATE");
+    const effects = { rollback: [] as Array<() => void>, commit: [] as Array<() => void> };
+    this.effects = effects;
+    let result: { status: number; body: unknown };
+    try {
+      const previous = this.db.prepare("SELECT client, digest, result FROM request_receipts WHERE id = ?").get(key) as DbRow | undefined;
+      if (previous) {
+        if (previous.client !== client || previous.digest !== digest) throw new HttpError(409, "请求编号已用于其他客户端或其他内容，请使用新编号。");
+        result = JSON.parse(String(previous.result)) as { status: number; body: unknown };
+      } else {
+        result = action();
+        this.db.prepare("INSERT INTO request_receipts (id, client, digest, result, created_at) VALUES (?, ?, ?, ?, ?)")
+          .run(key, client, digest, JSON.stringify(result), now());
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      for (const undo of effects.rollback.reverse()) undo();
+      throw error;
+    } finally {
+      this.effects = null;
+    }
+    // Committed data and its receipt remain authoritative even if orphan-file cleanup fails.
+    for (const cleanup of effects.commit) {
+      try { cleanup(); } catch { /* The unreferenced files stay under .incoming for maintenance. */ }
+    }
+    return result;
+  }
+
   private migrate(): void {
     // 只在 forms 表首次创建时播种默认形态；用户即使删空清单，重开库也不再回填。
     const formsTableExists = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'forms'").get();
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS request_receipts (
+        id TEXT PRIMARY KEY,
+        client TEXT NOT NULL,
+        digest TEXT NOT NULL,
+        result TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS items (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL DEFAULT '',
@@ -226,24 +267,24 @@ export class LibraryStore {
       `);
     }
     if (!itemColumns.some((column) => String(column.name) === "sort_order")) {
-      this.db.exec("BEGIN IMMEDIATE");
+      this.db.exec("SAVEPOINT library_write");
       try {
         this.db.exec("ALTER TABLE items ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0");
         this.normalizeSortOrder();
-        this.db.exec("COMMIT");
+        this.db.exec("RELEASE library_write");
       } catch (error) {
-        this.db.exec("ROLLBACK");
+        this.db.exec("ROLLBACK TO library_write; RELEASE library_write");
         throw error;
       }
     } else {
       const orderState = this.db.prepare("SELECT COUNT(*) AS total, COUNT(DISTINCT sort_order) AS distinct_count FROM items").get() as DbRow;
       if (Number(orderState.total) !== Number(orderState.distinct_count)) {
-        this.db.exec("BEGIN IMMEDIATE");
+        this.db.exec("SAVEPOINT library_write");
         try {
           this.normalizeSortOrder();
-          this.db.exec("COMMIT");
+          this.db.exec("RELEASE library_write");
         } catch (error) {
-          this.db.exec("ROLLBACK");
+          this.db.exec("ROLLBACK TO library_write; RELEASE library_write");
           throw error;
         }
       }
@@ -264,7 +305,7 @@ export class LibraryStore {
       return matched[1];
     };
     const update = this.db.prepare("UPDATE assets SET storage_path = ?, preview_path = ? WHERE id = ?");
-    this.db.exec("BEGIN IMMEDIATE");
+    this.db.exec("SAVEPOINT library_write");
     try {
       for (const row of rows) {
         update.run(
@@ -273,9 +314,9 @@ export class LibraryStore {
           String(row.id),
         );
       }
-      this.db.exec("COMMIT");
+      this.db.exec("RELEASE library_write");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      this.db.exec("ROLLBACK TO library_write; RELEASE library_write");
       throw error;
     }
   }
@@ -376,14 +417,14 @@ export class LibraryStore {
   createItem(title = "", note = "", tags: string[] = []): ItemRecord {
     const id = randomUUID();
     const timestamp = now();
-    this.db.exec("BEGIN IMMEDIATE");
+    this.db.exec("SAVEPOINT library_write");
     try {
       this.db.prepare("INSERT INTO items (id, title, note, state, cover_asset_id, sort_order, created_at, updated_at) VALUES (?, ?, ?, 'active', NULL, ?, ?, ?)")
         .run(id, title.trim() || "未命名内容组", note, this.nextSortOrder(), timestamp, timestamp);
       this.replaceTags(id, tags);
-      this.db.exec("COMMIT");
+      this.db.exec("RELEASE library_write");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      this.db.exec("ROLLBACK TO library_write; RELEASE library_write");
       throw error;
     }
     return this.getItem(id);
@@ -392,7 +433,7 @@ export class LibraryStore {
   updateItem(id: string, patch: { title?: string; note?: string; tags?: string[] }): ItemRecord {
     this.getItem(id);
     const timestamp = now();
-    this.db.exec("BEGIN IMMEDIATE");
+    this.db.exec("SAVEPOINT library_write");
     try {
       if (patch.title !== undefined) {
         this.db.prepare("UPDATE items SET title = ?, updated_at = ? WHERE id = ?").run(patch.title.trim() || "未命名内容组", timestamp, id);
@@ -402,9 +443,9 @@ export class LibraryStore {
       }
       if (patch.tags !== undefined) this.replaceTags(id, patch.tags);
       this.db.prepare("UPDATE items SET updated_at = ? WHERE id = ?").run(timestamp, id);
-      this.db.exec("COMMIT");
+      this.db.exec("RELEASE library_write");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      this.db.exec("ROLLBACK TO library_write; RELEASE library_write");
       throw error;
     }
     return this.getItem(id);
@@ -432,12 +473,12 @@ export class LibraryStore {
       .map((row) => String(row.id));
     const orderedIds = [...ids, ...trashIds];
     const update = this.db.prepare("UPDATE items SET sort_order = ? WHERE id = ?");
-    this.db.exec("BEGIN IMMEDIATE");
+    this.db.exec("SAVEPOINT library_write");
     try {
       orderedIds.forEach((itemId, index) => update.run(orderedIds.length - index, itemId));
-      this.db.exec("COMMIT");
+      this.db.exec("RELEASE library_write");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      this.db.exec("ROLLBACK TO library_write; RELEASE library_write");
       throw error;
     }
     return this.listItems();
@@ -453,12 +494,12 @@ export class LibraryStore {
       .map((row) => String(row.id));
     const allIds = [...orderedIds, ...trashIds];
     const update = this.db.prepare("UPDATE items SET sort_order = ? WHERE id = ?");
-    this.db.exec("BEGIN IMMEDIATE");
+    this.db.exec("SAVEPOINT library_write");
     try {
       allIds.forEach((itemId, index) => update.run(allIds.length - index, itemId));
-      this.db.exec("COMMIT");
+      this.db.exec("RELEASE library_write");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      this.db.exec("ROLLBACK TO library_write; RELEASE library_write");
       throw error;
     }
     return this.listItems();
@@ -551,16 +592,16 @@ export class LibraryStore {
       if (target.state !== "active") throw new Error("目标内容组不可用。 ");
       position = nextUnusedPosition(target.assets, target.assets.length);
     }
-    this.db.exec("BEGIN IMMEDIATE");
+    this.db.exec("SAVEPOINT library_write");
     try {
       this.db.prepare(`
         UPDATE assets SET item_id = ?, previous_item_id = ?, state = ?, x = ?, y = ?, updated_at = ? WHERE id = ?
       `).run(targetItemId, sourceItemId, targetItemId ? "active" : "staged", position.x, position.y, now(), assetId);
       if (targetItemId) this.touchItem(targetItemId);
       if (sourceItemId && sourceItemId !== targetItemId) this.removeEmptyItem(sourceItemId);
-      this.db.exec("COMMIT");
+      this.db.exec("RELEASE library_write");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      this.db.exec("ROLLBACK TO library_write; RELEASE library_write");
       throw error;
     }
     return this.getAsset(assetId);
@@ -572,7 +613,7 @@ export class LibraryStore {
     if (assets.some((asset) => asset.state !== "staged")) throw new Error("只能使用暂存区素材创建内容组。 ");
     const id = randomUUID();
     const timestamp = now();
-    this.db.exec("BEGIN IMMEDIATE");
+    this.db.exec("SAVEPOINT library_write");
     try {
       this.db.prepare("INSERT INTO items (id, title, note, state, cover_asset_id, sort_order, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?, ?, ?)")
         .run(id, title.trim() || basename(assets[0].name, extname(assets[0].name)), note, assetIds[0], this.nextSortOrder(), timestamp, timestamp);
@@ -582,9 +623,9 @@ export class LibraryStore {
           .run(id, position.x, position.y, timestamp, assetId);
       });
       this.replaceTags(id, tags);
-      this.db.exec("COMMIT");
+      this.db.exec("RELEASE library_write");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      this.db.exec("ROLLBACK TO library_write; RELEASE library_write");
       throw error;
     }
     return this.getItem(id);
@@ -606,14 +647,14 @@ export class LibraryStore {
   trashAsset(id: string): AssetRecord {
     const asset = this.getAsset(id);
     const sourceItemId = asset.itemId;
-    this.db.exec("BEGIN IMMEDIATE");
+    this.db.exec("SAVEPOINT library_write");
     try {
       this.db.prepare("UPDATE assets SET item_id = NULL, previous_item_id = ?, state = 'trash', updated_at = ? WHERE id = ?")
         .run(sourceItemId, now(), id);
       if (sourceItemId) this.removeEmptyItem(sourceItemId);
-      this.db.exec("COMMIT");
+      this.db.exec("RELEASE library_write");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      this.db.exec("ROLLBACK TO library_write; RELEASE library_write");
       throw error;
     }
     return this.getAsset(id);
@@ -653,16 +694,24 @@ export class LibraryStore {
           moved.push({ from: this.absolute(row.preview_path), to: target });
         }
       }
-      this.db.exec("BEGIN IMMEDIATE");
+      this.db.exec("SAVEPOINT library_write");
       try {
         this.db.prepare("DELETE FROM assets WHERE state = 'trash' OR item_id IN (SELECT id FROM items WHERE state = 'trash')").run();
         this.db.prepare("DELETE FROM items WHERE state = 'trash'").run();
-        this.db.exec("COMMIT");
+        this.db.exec("RELEASE library_write");
       } catch (error) {
-        this.db.exec("ROLLBACK");
+        this.db.exec("ROLLBACK TO library_write; RELEASE library_write");
         throw error;
       }
-      rmSync(purgeDir, { recursive: true, force: true });
+      if (this.effects) {
+        this.effects.rollback.push(() => {
+          for (const entry of [...moved].reverse()) {
+            if (existsSync(entry.to) && !existsSync(entry.from)) renameSync(entry.to, entry.from);
+          }
+          rmSync(purgeDir, { recursive: true, force: true });
+        });
+        this.effects.commit.push(() => rmSync(purgeDir, { recursive: true, force: true }));
+      } else rmSync(purgeDir, { recursive: true, force: true });
     } catch (error) {
       for (const entry of moved.reverse()) {
         if (existsSync(entry.to) && !existsSync(entry.from)) renameSync(entry.to, entry.from);
@@ -736,7 +785,7 @@ export class LibraryStore {
 
     const itemId = options.itemId ?? randomUUID();
     try {
-      this.db.exec("BEGIN IMMEDIATE");
+      this.db.exec("SAVEPOINT library_write");
       try {
         const timestamp = now();
         if (!options.itemId) {
@@ -762,9 +811,9 @@ export class LibraryStore {
           );
         }
         this.touchItem(itemId);
-        this.db.exec("COMMIT");
+        this.db.exec("RELEASE library_write");
       } catch (error) {
-        this.db.exec("ROLLBACK");
+        this.db.exec("ROLLBACK TO library_write; RELEASE library_write");
         throw error;
       }
     } catch (error) {
@@ -776,6 +825,12 @@ export class LibraryStore {
       }
       throw error;
     }
+    if (this.effects) this.effects.rollback.push(() => {
+      for (const asset of prepared) {
+        rmSync(asset.finalDir, { recursive: true, force: true });
+        if (asset.finalPreview) rmSync(asset.finalPreview, { force: true });
+      }
+    });
     const cleanupFailures: string[] = [];
     for (const asset of prepared) {
       if (!asset.source.removeAfter) continue;

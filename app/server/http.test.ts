@@ -13,7 +13,7 @@ const PNG_OTHER = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC
 function requestWithHost(port: number, path: string, host: string, origin?: string): Promise<number> {
   return new Promise((resolve, reject) => {
     const request = httpRequest({ hostname: "127.0.0.1", port, path, method: origin ? "POST" : "GET", headers: {
-      host,
+      host, authorization: `Bearer ${"t".repeat(32)}`,
       ...(origin ? { origin, "content-type": "application/json", "content-length": "2" } : {}),
     } }, (response) => {
       response.resume();
@@ -171,7 +171,7 @@ test("HTTP exports one asset as the original file and several as one zip", async
 
 test("HTTP accepts the configured public address and still rejects other origins", async () => {
   const root = mkdtempSync(join(tmpdir(), "taste-http-"));
-  const server = createTasteHttpServer({ home: join(root, "runtime"), webRoot: join(root, "web"), publicUrl: "https://lab.example.ts.net" });
+  const server = createTasteHttpServer({ home: join(root, "runtime"), webRoot: join(root, "web"), publicUrl: "https://lab.example.ts.net", clients: { test: "t".repeat(32) } });
   const address = await server.listen(0);
   try {
     assert.equal(await requestWithHost(address.port, "/api/health", "lab.example.ts.net"), 200);
