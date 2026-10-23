@@ -9,10 +9,6 @@ export interface RuntimePaths {
   files: string;
   previews: string;
   incoming: string;
-  run: string;
-  logs: string;
-  serverInfo: string;
-  serverLog: string;
 }
 
 export function getRuntimePaths(homeOverride = process.env.TASTE_HOME): RuntimePaths {
@@ -24,10 +20,6 @@ export function getRuntimePaths(homeOverride = process.env.TASTE_HOME): RuntimeP
     files: join(home, "files"),
     previews: join(home, "previews"),
     incoming: join(home, ".incoming"),
-    run: join(home, "run"),
-    logs: join(home, "logs"),
-    serverInfo: join(home, "run", "server.json"),
-    serverLog: join(home, "logs", "server.log"),
   };
 }
 
@@ -38,8 +30,6 @@ export function ensureRuntime(paths = getRuntimePaths()): RuntimePaths {
     paths.files,
     paths.previews,
     paths.incoming,
-    paths.run,
-    paths.logs,
   ]) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
   }

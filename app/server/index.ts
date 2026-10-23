@@ -1,4 +1,3 @@
-import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readClients } from "./auth.js";
@@ -10,10 +9,8 @@ export async function startServer(): Promise<void> {
   const webRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "dist");
   const server = createTasteHttpServer({ webRoot, publicUrl: process.env.TASTE_PUBLIC_URL || undefined, clients });
   const address = await server.listen(Number(process.env.TASTE_PORT ?? 4178));
-  writeFileSync(server.store.paths.serverInfo, JSON.stringify({ pid: process.pid, port: address.port, startedAt: new Date().toISOString() }), { mode: 0o600 });
 
   const shutdown = async () => {
-    if (existsSync(server.store.paths.serverInfo)) rmSync(server.store.paths.serverInfo, { force: true });
     await server.close();
     process.exit(0);
   };

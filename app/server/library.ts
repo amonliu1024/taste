@@ -7,10 +7,9 @@ import {
   renameSync,
   rmSync,
   statSync,
-  unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, extname, isAbsolute, join, relative } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { convertToJpeg, createPreview, detectContentCrop, readImageDimensions, type CropBox } from "./preview.js";
 import { HttpError } from "./auth.js";
@@ -18,6 +17,66 @@ import { ensureRuntime, getRuntimePaths, type RuntimePaths } from "./runtime.js"
 
 // 画布尺寸上限：双击还原原始尺寸时，长边上万像素的原图也要能完整落到画布上。
 const MAX_CANVAS_SIZE = 12000;
+
+const CURRENT_SCHEMA = `
+      CREATE TABLE request_receipts (
+        id TEXT PRIMARY KEY,
+        client TEXT NOT NULL,
+        digest TEXT NOT NULL,
+        result TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE items (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL DEFAULT '',
+        note TEXT NOT NULL DEFAULT '',
+        state TEXT NOT NULL CHECK (state IN ('active', 'trash')) DEFAULT 'active',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE assets (
+        id TEXT PRIMARY KEY,
+        item_id TEXT REFERENCES items(id) ON DELETE CASCADE,
+        previous_item_id TEXT,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('image', 'html')),
+        state TEXT NOT NULL CHECK (state IN ('active', 'staged', 'trash')) DEFAULT 'active',
+        storage_path TEXT NOT NULL,
+        preview_path TEXT,
+        size INTEGER NOT NULL,
+        sha256 TEXT NOT NULL UNIQUE,
+        width INTEGER,
+        height INTEGER,
+        crop_x INTEGER,
+        crop_y INTEGER,
+        crop_width INTEGER,
+        crop_height INTEGER,
+        crop_disabled INTEGER NOT NULL DEFAULT 0,
+        x REAL NOT NULL DEFAULT 0,
+        y REAL NOT NULL DEFAULT 0,
+        canvas_width REAL NOT NULL DEFAULT 420,
+        canvas_height REAL NOT NULL DEFAULT 300,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE tags (
+        name TEXT PRIMARY KEY COLLATE NOCASE
+      );
+      CREATE TABLE forms (
+        name TEXT PRIMARY KEY COLLATE NOCASE,
+        description TEXT NOT NULL DEFAULT '',
+        position INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE item_tags (
+        item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+        tag_name TEXT NOT NULL REFERENCES tags(name) ON DELETE CASCADE,
+        PRIMARY KEY (item_id, tag_name)
+      );
+      CREATE INDEX idx_items_state_updated ON items(state, updated_at DESC);
+      CREATE INDEX idx_assets_item_state ON assets(item_id, state);
+      CREATE INDEX idx_assets_state_updated ON assets(state, updated_at DESC);
+`;
 
 export type AssetKind = "image" | "html";
 export type AssetState = "active" | "staged" | "trash";
@@ -85,7 +144,6 @@ const DEFAULT_FORMS: Array<[string, string]> = [
 interface ImportSource {
   path: string;
   name: string;
-  removeAfter: boolean;
 }
 
 interface PreparedAsset {
@@ -147,8 +205,13 @@ export class LibraryStore {
   constructor(homeOverride?: string) {
     this.paths = ensureRuntime(getRuntimePaths(homeOverride));
     this.db = new DatabaseSync(this.paths.db);
-    this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
-    this.migrate();
+    try {
+      this.initialize();
+      this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
   }
 
   close(): void {
@@ -187,142 +250,47 @@ export class LibraryStore {
     return result;
   }
 
-  private migrate(): void {
-    // 只在 forms 表首次创建时播种默认形态；用户即使删空清单，重开库也不再回填。
-    const formsTableExists = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'forms'").get();
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS request_receipts (
-        id TEXT PRIMARY KEY,
-        client TEXT NOT NULL,
-        digest TEXT NOT NULL,
-        result TEXT NOT NULL,
-        created_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS items (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL DEFAULT '',
-        note TEXT NOT NULL DEFAULT '',
-        state TEXT NOT NULL CHECK (state IN ('active', 'trash')) DEFAULT 'active',
-        cover_asset_id TEXT,
-        sort_order INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS assets (
-        id TEXT PRIMARY KEY,
-        item_id TEXT REFERENCES items(id) ON DELETE CASCADE,
-        previous_item_id TEXT,
-        name TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK (kind IN ('image', 'html')),
-        state TEXT NOT NULL CHECK (state IN ('active', 'staged', 'trash')) DEFAULT 'active',
-        storage_path TEXT NOT NULL,
-        preview_path TEXT,
-        size INTEGER NOT NULL,
-        sha256 TEXT NOT NULL UNIQUE,
-        width INTEGER,
-        height INTEGER,
-        x REAL NOT NULL DEFAULT 0,
-        y REAL NOT NULL DEFAULT 0,
-        canvas_width REAL NOT NULL DEFAULT 420,
-        canvas_height REAL NOT NULL DEFAULT 300,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS tags (
-        name TEXT PRIMARY KEY COLLATE NOCASE
-      );
-      CREATE TABLE IF NOT EXISTS forms (
-        name TEXT PRIMARY KEY COLLATE NOCASE,
-        description TEXT NOT NULL DEFAULT '',
-        position INTEGER NOT NULL DEFAULT 0
-      );
-      CREATE TABLE IF NOT EXISTS item_tags (
-        item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-        tag_name TEXT NOT NULL REFERENCES tags(name) ON DELETE CASCADE,
-        PRIMARY KEY (item_id, tag_name)
-      );
-      CREATE INDEX IF NOT EXISTS idx_items_state_updated ON items(state, updated_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_assets_item_state ON assets(item_id, state);
-      CREATE INDEX IF NOT EXISTS idx_assets_state_updated ON assets(state, updated_at DESC);
-    `);
-    if (!formsTableExists) {
-      const insert = this.db.prepare("INSERT INTO forms (name, description, position) VALUES (?, ?, ?)");
-      DEFAULT_FORMS.forEach(([name, description], index) => insert.run(name, description, index + 1));
-    }
-    const assetColumns = this.db.prepare("PRAGMA table_info(assets)").all() as DbRow[];
-    if (!assetColumns.some((column) => String(column.name) === "crop_x")) {
-      for (const column of ["crop_x", "crop_y", "crop_width", "crop_height"]) this.db.exec(`ALTER TABLE assets ADD COLUMN ${column} INTEGER`);
-      this.db.exec("ALTER TABLE assets ADD COLUMN crop_disabled INTEGER NOT NULL DEFAULT 0");
-    }
-    this.relativizeStoredPaths();
-    const itemColumns = this.db.prepare("PRAGMA table_info(items)").all() as DbRow[];
-    if (!itemColumns.some((column) => String(column.name) === "title")) {
-      this.db.exec("ALTER TABLE items ADD COLUMN title TEXT NOT NULL DEFAULT ''");
-      this.db.exec(`
-        UPDATE items SET title = COALESCE(
-          NULLIF(trim(note), ''),
-          (SELECT name FROM assets WHERE assets.item_id = items.id AND assets.state = 'active' ORDER BY created_at LIMIT 1),
-          '未命名内容组'
-        )
-      `);
-    }
-    if (!itemColumns.some((column) => String(column.name) === "sort_order")) {
-      this.db.exec("SAVEPOINT library_write");
+  private initialize(): void {
+    const tables = (db: DatabaseSync) => (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as DbRow[]).map((row) => String(row.name));
+    if (tables(this.db).length === 0) {
+      this.db.exec("BEGIN");
       try {
-        this.db.exec("ALTER TABLE items ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0");
-        this.normalizeSortOrder();
-        this.db.exec("RELEASE library_write");
+        this.db.exec(CURRENT_SCHEMA);
+        const insert = this.db.prepare("INSERT INTO forms (name, description, position) VALUES (?, ?, ?)");
+        DEFAULT_FORMS.forEach(([name, description], index) => insert.run(name, description, index + 1));
+        this.db.exec("COMMIT");
       } catch (error) {
-        this.db.exec("ROLLBACK TO library_write; RELEASE library_write");
+        this.db.exec("ROLLBACK");
         throw error;
       }
-    } else {
-      const orderState = this.db.prepare("SELECT COUNT(*) AS total, COUNT(DISTINCT sort_order) AS distinct_count FROM items").get() as DbRow;
-      if (Number(orderState.total) !== Number(orderState.distinct_count)) {
-        this.db.exec("SAVEPOINT library_write");
-        try {
-          this.normalizeSortOrder();
-          this.db.exec("RELEASE library_write");
-        } catch (error) {
-          this.db.exec("ROLLBACK TO library_write; RELEASE library_write");
-          throw error;
-        }
-      }
+      return;
     }
-  }
-
-  // 数据库只保存相对 Runtime 根的路径，Runtime 整体搬到另一台机器或另一个 TASTE_HOME 后仍然成立。
-  // 旧库里的绝对路径按固定布局 files/<id>/<name> 与 previews/<file> 截出相对部分。
-  private relativizeStoredPaths(): void {
-    const rows = this.db.prepare("SELECT id, storage_path, preview_path FROM assets WHERE storage_path LIKE '/%' OR preview_path LIKE '/%'").all() as DbRow[];
-    if (rows.length === 0) return;
-    const toRelative = (value: unknown, pattern: RegExp): string | null => {
-      if (value === null || value === undefined) return null;
-      const text = String(value);
-      if (!isAbsolute(text)) return text;
-      const matched = text.match(pattern);
-      if (!matched) throw new Error(`无法识别的素材路径：${text}`);
-      return matched[1];
-    };
-    const update = this.db.prepare("UPDATE assets SET storage_path = ?, preview_path = ? WHERE id = ?");
-    this.db.exec("SAVEPOINT library_write");
+    // 用同一建库定义校验恢复输入；不修改或补建不符合当前格式的数据库。
+    const expected = new DatabaseSync(":memory:");
     try {
-      for (const row of rows) {
-        update.run(
-          toRelative(row.storage_path, /\/(files\/[^/]+\/[^/]+)$/),
-          toRelative(row.preview_path, /\/(previews\/[^/]+)$/),
-          String(row.id),
-        );
+      expected.exec(CURRENT_SCHEMA);
+      const currentTables = tables(expected);
+      const columns = (db: DatabaseSync, table: string) => (db.prepare(`PRAGMA table_info(${table})`).all() as DbRow[]).map((row) => String(row.name)).sort().join(",");
+      if (tables(this.db).join(",") !== currentTables.join(",") || currentTables.some((table) => columns(this.db, table) !== columns(expected, table))) {
+        throw new Error("数据库不符合当前格式，请使用当前版本生成的完整备份恢复。");
       }
-      this.db.exec("RELEASE library_write");
-    } catch (error) {
-      this.db.exec("ROLLBACK TO library_write; RELEASE library_write");
-      throw error;
-    }
+      for (const asset of this.db.prepare("SELECT storage_path, preview_path FROM assets").all() as DbRow[]) {
+        this.absolute(asset.storage_path);
+        if (asset.preview_path !== null) this.absolute(asset.preview_path);
+      }
+      const order = this.db.prepare("SELECT COUNT(*) AS total, COUNT(DISTINCT sort_order) AS unique_count FROM items").get() as DbRow;
+      if (Number(order.total) !== Number(order.unique_count)) throw new Error("数据库排序不符合当前格式，请使用已验证的完整备份恢复。");
+    } finally { expected.close(); }
   }
 
   private absolute(stored: unknown): string {
-    return join(this.paths.home, String(stored));
+    const value = String(stored);
+    const path = resolve(this.paths.home, value);
+    const within = relative(this.paths.home, path);
+    if (isAbsolute(value) || !within || within === ".." || within.startsWith(`..${sep}`)) {
+      throw new Error("数据库路径不符合当前格式，请使用已验证的完整备份恢复。");
+    }
+    return path;
   }
 
   private stored(path: string): string {
@@ -406,7 +374,7 @@ export class LibraryStore {
         const name = cleanName(file.name);
         const path = join(uploadDir, `${index}-${name}`);
         writeFileSync(path, Buffer.from(file.data, "base64"), { mode: 0o600 });
-        return { path, name, removeAfter: true };
+        return { path, name };
       });
       return this.importSources(sources, options);
     } finally {
@@ -419,7 +387,7 @@ export class LibraryStore {
     const timestamp = now();
     this.db.exec("SAVEPOINT library_write");
     try {
-      this.db.prepare("INSERT INTO items (id, title, note, state, cover_asset_id, sort_order, created_at, updated_at) VALUES (?, ?, ?, 'active', NULL, ?, ?, ?)")
+      this.db.prepare("INSERT INTO items (id, title, note, state, sort_order, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?, ?)")
         .run(id, title.trim() || "未命名内容组", note, this.nextSortOrder(), timestamp, timestamp);
       this.replaceTags(id, tags);
       this.db.exec("RELEASE library_write");
@@ -545,7 +513,7 @@ export class LibraryStore {
     return this.getAsset(assetId);
   }
 
-  // 为未被用户关闭去边的图片重新检测裁切框，供 `taste regenerate-previews` 批量补算。
+  // 为未被用户关闭去边的图片重新检测裁切框，供 regeneratePreviews 批量补算。
   // 用当前预览生成逻辑重建全部活跃图片素材的预览，顺手补回缺失的尺寸，再统一补算自动去边裁切框。
   // HTML 素材的预览由 Chromium 截图生成，这里不动它们。
   regeneratePreviews(): { total: number; regenerated: number; dimensionsBackfilled: number; failed: Array<{ id: string; reason: string }>; crops: { checked: number; cropped: number } } {
@@ -615,8 +583,8 @@ export class LibraryStore {
     const timestamp = now();
     this.db.exec("SAVEPOINT library_write");
     try {
-      this.db.prepare("INSERT INTO items (id, title, note, state, cover_asset_id, sort_order, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?, ?, ?)")
-        .run(id, title.trim() || basename(assets[0].name, extname(assets[0].name)), note, assetIds[0], this.nextSortOrder(), timestamp, timestamp);
+      this.db.prepare("INSERT INTO items (id, title, note, state, sort_order, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?, ?)")
+        .run(id, title.trim() || basename(assets[0].name, extname(assets[0].name)), note, this.nextSortOrder(), timestamp, timestamp);
       assetIds.forEach((assetId, index) => {
         const position = initialPosition(index);
         this.db.prepare(`UPDATE assets SET item_id = ?, state = 'active', x = ?, y = ?, updated_at = ? WHERE id = ?`)
@@ -790,8 +758,8 @@ export class LibraryStore {
         const timestamp = now();
         if (!options.itemId) {
           const title = options.title?.trim() || basename(prepared[0].source.name, extname(prepared[0].source.name));
-          this.db.prepare("INSERT INTO items (id, title, note, state, cover_asset_id, sort_order, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?, ?, ?)")
-            .run(itemId, title || "未命名内容组", options.note ?? "", prepared[0].id, this.nextSortOrder(), timestamp, timestamp);
+          this.db.prepare("INSERT INTO items (id, title, note, state, sort_order, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?, ?)")
+            .run(itemId, title || "未命名内容组", options.note ?? "", this.nextSortOrder(), timestamp, timestamp);
           this.replaceTags(itemId, options.tags ?? []);
         }
         for (const asset of prepared) {
@@ -831,18 +799,6 @@ export class LibraryStore {
         if (asset.finalPreview) rmSync(asset.finalPreview, { force: true });
       }
     });
-    const cleanupFailures: string[] = [];
-    for (const asset of prepared) {
-      if (!asset.source.removeAfter) continue;
-      try {
-        unlinkSync(asset.source.path);
-      } catch {
-        cleanupFailures.push(asset.source.path);
-      }
-    }
-    if (cleanupFailures.length > 0) {
-      throw new Error(`内容已安全导入，但未能移除以下源文件：${cleanupFailures.join("、")}`);
-    }
     return this.getItem(itemId);
   }
 
@@ -907,7 +863,6 @@ export class LibraryStore {
       note: String(row.note),
       tags,
       state: String(row.state) as ItemState,
-      // Legacy cover choices are intentionally ignored: the first active file is always the preview.
       coverAssetId: assets[0]?.id ?? null,
       assets,
       createdAt: String(row.created_at),
@@ -957,15 +912,6 @@ export class LibraryStore {
     return Number(row.value);
   }
 
-  private normalizeSortOrder(): void {
-    const rows = this.db.prepare(`
-      SELECT id FROM items
-      ORDER BY CASE state WHEN 'active' THEN 0 ELSE 1 END, sort_order DESC, updated_at DESC, created_at DESC
-    `).all() as DbRow[];
-    const update = this.db.prepare("UPDATE items SET sort_order = ? WHERE id = ?");
-    rows.forEach((row, index) => update.run(rows.length - index, String(row.id)));
-  }
-
   private touchItem(id: string): void {
     this.db.prepare("UPDATE items SET updated_at = ? WHERE id = ?").run(now(), id);
   }
@@ -973,16 +919,6 @@ export class LibraryStore {
   private removeEmptyItem(id: string): void {
     const count = this.db.prepare("SELECT count(*) AS count FROM assets WHERE item_id = ? AND state = 'active'").get(id) as DbRow;
     if (Number(count.count) === 0) this.db.prepare("DELETE FROM items WHERE id = ?").run(id);
-    else {
-      const item = this.db.prepare("SELECT cover_asset_id FROM items WHERE id = ?").get(id) as DbRow | undefined;
-      if (item?.cover_asset_id) {
-        const cover = this.db.prepare("SELECT id FROM assets WHERE id = ? AND item_id = ? AND state = 'active'").get(String(item.cover_asset_id), id);
-        if (!cover) {
-          const fallback = this.db.prepare("SELECT id FROM assets WHERE item_id = ? AND state = 'active' ORDER BY created_at LIMIT 1").get(id) as DbRow;
-          this.db.prepare("UPDATE items SET cover_asset_id = ?, updated_at = ? WHERE id = ?").run(String(fallback.id), now(), id);
-        }
-      }
-    }
   }
 
 }

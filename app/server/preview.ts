@@ -25,7 +25,7 @@ function image(args: string[]): string | null {
 
 // 预览图最长边的上限。注意：只有原图超过它才压缩，小图绝不放大（放大 = 糊）。
 // 画布可以把单张素材放到接近满屏，预览必须留够像素，否则一放大就发虚；
-// 调整这个值后需要执行 `taste regenerate-previews` 让既有素材重新生成预览。
+// 调整这个值后，使用 server/maintenance.ts 的 regenerate-previews 入口重建既有预览。
 export const PREVIEW_CAP = 2400;
 
 export interface Dimensions {

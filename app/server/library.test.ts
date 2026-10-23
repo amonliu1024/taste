@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -119,76 +119,49 @@ test("content groups accept one atomic complete ordering", () => {
   }
 });
 
-test("an interrupted sort migration with duplicate keys is repaired idempotently", () => {
-  const root = mkdtempSync(join(tmpdir(), "taste-sort-repair-"));
-  const runtime = join(root, "runtime");
-  mkdirSync(join(runtime, "db"), { recursive: true });
-  const db = new DatabaseSync(join(runtime, "db", "taste.sqlite"));
-  db.exec(`
-    CREATE TABLE items (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL DEFAULT '',
-      note TEXT NOT NULL DEFAULT '',
-      state TEXT NOT NULL DEFAULT 'active',
-      cover_asset_id TEXT,
-      sort_order INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-    INSERT INTO items VALUES ('older', '旧组', '', 'active', NULL, 0, '2026-08-14', '2026-08-14');
-    INSERT INTO items VALUES ('newer', '新组', '', 'active', NULL, 0, '2026-08-15', '2026-08-15');
-  `);
-  db.close();
-  const store = new LibraryStore(runtime);
-  try {
-    assert.deepEqual(store.listItems().map((item) => item.id), ["newer", "older"]);
-    store.updateItem("older", { note: "不会因为更新时间置顶" });
-    assert.deepEqual(store.listItems().map((item) => item.id), ["newer", "older"]);
-  } finally {
-    store.close();
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("a pre-title database is migrated with a usable group title", () => {
-  const root = mkdtempSync(join(tmpdir(), "taste-legacy-"));
-  const runtime = join(root, "runtime");
-  mkdirSync(join(runtime, "db"), { recursive: true });
-  const db = new DatabaseSync(join(runtime, "db", "taste.sqlite"));
-  db.exec(`
-    CREATE TABLE items (
-      id TEXT PRIMARY KEY,
-      note TEXT NOT NULL DEFAULT '',
-      state TEXT NOT NULL DEFAULT 'active',
-      cover_asset_id TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-    INSERT INTO items VALUES ('legacy', '旧备注', 'active', NULL, '2026-08-15', '2026-08-15');
-  `);
-  db.close();
-  const store = new LibraryStore(runtime);
-  try {
-    assert.equal(store.getItem("legacy").title, "旧备注");
-  } finally {
-    store.close();
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("a legacy manual cover no longer overrides the first active file", () => {
+test("a restored current snapshot preserves library content, files and receipts across reopening", () => {
   const f = fixture();
   const second = join(f.root, "second.png");
+  const restored = join(f.root, "restored");
   try {
     writeFileSync(f.source, PNG_A);
     writeFileSync(second, PNG_B);
-    const item = upload(f.store, [f.source, second]);
-    const legacyDb = new DatabaseSync(f.store.paths.db);
-    legacyDb.prepare("UPDATE items SET cover_asset_id = ? WHERE id = ?").run(item.assets[1].id, item.id);
-    legacyDb.close();
-    assert.equal(f.store.getItem(item.id).coverAssetId, item.assets[0].id);
+    const key = "12345678-1234-1234-1234-123456789abc";
+    const receipt = f.store.executeRequest(key, "local", "import-digest", () => ({ status: 201, body: upload(f.store, [f.source, second], { tags: ["保留"] }) }));
+    const items = f.store.listItems();
+    const forms = f.store.listForms();
+    const files = items[0].assets.map((asset) => ({ id: asset.id, original: readFileSync(f.store.resolveAssetPath(asset.id, "original").path), preview: readFileSync(f.store.resolveAssetPath(asset.id, "preview").path) }));
+    const database = f.store.paths.db;
+    const home = f.store.paths.home;
+    f.store.close();
+
+    mkdirSync(join(restored, "db"), { recursive: true });
+    copyFileSync(database, join(restored, "db", "taste.sqlite"));
+    for (const directory of ["files", "previews"]) cpSync(join(home, directory), join(restored, directory), { recursive: true });
+
+    for (let reopen = 0; reopen < 2; reopen++) {
+      const store = new LibraryStore(restored);
+      try {
+        assert.deepEqual(store.listItems(), items);
+        assert.deepEqual(store.listForms(), forms);
+        assert.deepEqual(store.executeRequest(key, "local", "import-digest", () => { throw new Error("回执恢复后不得重放写入"); }), receipt);
+        assert.throws(() => store.executeRequest(key, "local", "changed-digest", () => receipt), /请求编号已用于/);
+        for (const file of files) {
+          assert.deepEqual(readFileSync(store.resolveAssetPath(file.id, "original").path), file.original);
+          assert.deepEqual(readFileSync(store.resolveAssetPath(file.id, "preview").path), file.preview);
+        }
+        const created = store.createItem("恢复后可写");
+        store.trashItem(created.id);
+        assert.deepEqual(store.emptyTrash("DELETE"), { deletedItems: 1, deletedAssets: 0 });
+      } finally { store.close(); }
+    }
+    const restoredDb = new DatabaseSync(join(restored, "db", "taste.sqlite"), { readOnly: true });
+    try {
+      assert.equal(restoredDb.prepare("PRAGMA quick_check").get()!.quick_check, "ok");
+      assert.deepEqual(restoredDb.prepare("PRAGMA foreign_key_check").all(), []);
+    } finally { restoredDb.close(); }
   } finally {
-    f.close();
+    rmSync(f.root, { recursive: true, force: true });
   }
 });
 
@@ -367,30 +340,29 @@ test("forms are seeded once, extensible, and removable without touching item tag
   }
 });
 
-test("a runtime moved from another machine resolves legacy absolute paths inside the new home", () => {
-  const f = fixture();
-  try {
-    writeFileSync(f.source, PNG_A);
-    const asset = upload(f.store, [f.source]).assets[0];
-    const home = f.store.paths.home;
-    f.store.close();
-    const db = new DatabaseSync(join(home, "db", "taste.sqlite"));
-    const stored = db.prepare("SELECT storage_path, preview_path FROM assets WHERE id = ?").get(asset.id) as { storage_path: string; preview_path: string };
-    assert.equal(stored.storage_path, `files/${asset.id}/source.png`);
-    db.prepare("UPDATE assets SET storage_path = ?, preview_path = ? WHERE id = ?")
-      .run(`/Users/someone/.local/share/taste/${stored.storage_path}`, `/Users/someone/.local/share/taste/${stored.preview_path}`, asset.id);
-    db.close();
-
-    const reopened = new LibraryStore(home);
+test("unsupported databases are rejected without mutating their contents", () => {
+  for (const corrupt of [
+    "ALTER TABLE items ADD COLUMN retired_field TEXT",
+    "DROP TABLE request_receipts",
+    "UPDATE assets SET storage_path = '/old/runtime/files/image.png'",
+    "UPDATE assets SET storage_path = '../outside.png'",
+    "UPDATE assets SET preview_path = '../outside.png'",
+    "UPDATE items SET sort_order = 0",
+  ]) {
+    const f = fixture();
     try {
-      const original = reopened.resolveAssetPath(asset.id, "original").path;
-      assert.equal(original, join(home, "files", asset.id, "source.png"));
-      assert.equal(existsSync(original), true);
-      assert.equal(existsSync(reopened.resolveAssetPath(asset.id, "preview").path), true);
-    } finally {
-      reopened.close();
-    }
-  } finally {
-    rmSync(f.root, { recursive: true, force: true });
+      writeFileSync(f.source, PNG_A);
+      upload(f.store, [f.source]);
+      f.store.createItem("另一组");
+      const database = f.store.paths.db;
+      const home = f.store.paths.home;
+      f.store.close();
+      const db = new DatabaseSync(database);
+      db.exec(corrupt);
+      db.close();
+      const before = readFileSync(database);
+      assert.throws(() => new LibraryStore(home), /不符合当前格式/);
+      assert.deepEqual(readFileSync(database), before);
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
   }
 });
