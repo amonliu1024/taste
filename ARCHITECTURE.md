@@ -57,7 +57,7 @@ previews/<asset-id>.<webp|jpg>
 
 [预览生成器](app/server/preview.ts)为图片生成 WebP 预览，为 HTML 生成 JPG 截图；历史预览可能保留旧格式，执行 `regenerate-previews` 后按当前规则重建。
 
-数据库中的文件路径都相对 Runtime 根保存，当前格式的完整备份可以整体恢复到另一台机器。启动时按当前建库定义校验已有数据库，不符合当前结构、相对路径或唯一排序要求时明确报错；恢复使用当前版本生成并验证的完整备份。封面由首个有效素材决定。服务进程和日志由 systemd 管理。正式素材、SQLite、预览和日志都不能进入 Git。测试必须使用临时 `TASTE_HOME`。
+数据库中的文件路径都相对 Runtime 根保存，完整备份可以整体恢复到另一台机器。封面由首个有效素材决定。服务进程和日志由 systemd 管理。正式素材、SQLite、预览和日志都不能进入 Git。测试必须使用临时 `TASTE_HOME`。
 
 ## 数据与文件生命周期
 
@@ -89,4 +89,4 @@ CLI 的每个写请求携带 UUID `Idempotency-Key`。HTTP 路由将同步业务
 
 ## 构建与验证
 
-`app/package.json` 是版本源和构建入口。`pnpm test` 先运行 TypeScript 与 Vite 生产构建，再通过隔离 Runtime 覆盖存储状态机、当前备份恢复与旧格式拒绝、图片处理、HTTP 访问边界与导出、CLI 缺配置保护、鉴权、回执重试、远程导入及独立安装。CI 在 macOS 与 Ubuntu 上各跑一遍；HEIC 夹具依赖 `sips` 生成，Linux 上跳过该用例。画布和最终 CSS 变化还需要在生产构建上进行真实浏览器验证。
+`app/package.json` 是版本源和构建入口。`pnpm test` 先运行 TypeScript 与 Vite 生产构建，再通过隔离 Runtime 覆盖存储状态机、备份恢复、图片处理、HTTP 访问边界与导出、CLI 缺配置保护、鉴权、回执重试、远程导入及独立安装。CI 在 macOS 与 Ubuntu 上各跑一遍；HEIC 夹具依赖 `sips` 生成，Linux 上跳过该用例。画布和最终 CSS 变化还需要在生产构建上进行真实浏览器验证。

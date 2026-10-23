@@ -339,30 +339,3 @@ test("forms are seeded once, extensible, and removable without touching item tag
     rmSync(root, { recursive: true, force: true });
   }
 });
-
-test("unsupported databases are rejected without mutating their contents", () => {
-  for (const corrupt of [
-    "ALTER TABLE items ADD COLUMN retired_field TEXT",
-    "DROP TABLE request_receipts",
-    "UPDATE assets SET storage_path = '/old/runtime/files/image.png'",
-    "UPDATE assets SET storage_path = '../outside.png'",
-    "UPDATE assets SET preview_path = '../outside.png'",
-    "UPDATE items SET sort_order = 0",
-  ]) {
-    const f = fixture();
-    try {
-      writeFileSync(f.source, PNG_A);
-      upload(f.store, [f.source]);
-      f.store.createItem("另一组");
-      const database = f.store.paths.db;
-      const home = f.store.paths.home;
-      f.store.close();
-      const db = new DatabaseSync(database);
-      db.exec(corrupt);
-      db.close();
-      const before = readFileSync(database);
-      assert.throws(() => new LibraryStore(home), /不符合当前格式/);
-      assert.deepEqual(readFileSync(database), before);
-    } finally { rmSync(f.root, { recursive: true, force: true }); }
-  }
-});

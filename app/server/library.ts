@@ -9,7 +9,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, relative } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { convertToJpeg, createPreview, detectContentCrop, readImageDimensions, type CropBox } from "./preview.js";
 import { HttpError } from "./auth.js";
@@ -19,14 +19,14 @@ import { ensureRuntime, getRuntimePaths, type RuntimePaths } from "./runtime.js"
 const MAX_CANVAS_SIZE = 12000;
 
 const CURRENT_SCHEMA = `
-      CREATE TABLE request_receipts (
+      CREATE TABLE IF NOT EXISTS request_receipts (
         id TEXT PRIMARY KEY,
         client TEXT NOT NULL,
         digest TEXT NOT NULL,
         result TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
-      CREATE TABLE items (
+      CREATE TABLE IF NOT EXISTS items (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL DEFAULT '',
         note TEXT NOT NULL DEFAULT '',
@@ -35,7 +35,7 @@ const CURRENT_SCHEMA = `
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
-      CREATE TABLE assets (
+      CREATE TABLE IF NOT EXISTS assets (
         id TEXT PRIMARY KEY,
         item_id TEXT REFERENCES items(id) ON DELETE CASCADE,
         previous_item_id TEXT,
@@ -60,22 +60,22 @@ const CURRENT_SCHEMA = `
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
-      CREATE TABLE tags (
+      CREATE TABLE IF NOT EXISTS tags (
         name TEXT PRIMARY KEY COLLATE NOCASE
       );
-      CREATE TABLE forms (
+      CREATE TABLE IF NOT EXISTS forms (
         name TEXT PRIMARY KEY COLLATE NOCASE,
         description TEXT NOT NULL DEFAULT '',
         position INTEGER NOT NULL DEFAULT 0
       );
-      CREATE TABLE item_tags (
+      CREATE TABLE IF NOT EXISTS item_tags (
         item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
         tag_name TEXT NOT NULL REFERENCES tags(name) ON DELETE CASCADE,
         PRIMARY KEY (item_id, tag_name)
       );
-      CREATE INDEX idx_items_state_updated ON items(state, updated_at DESC);
-      CREATE INDEX idx_assets_item_state ON assets(item_id, state);
-      CREATE INDEX idx_assets_state_updated ON assets(state, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_items_state_updated ON items(state, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_assets_item_state ON assets(item_id, state);
+      CREATE INDEX IF NOT EXISTS idx_assets_state_updated ON assets(state, updated_at DESC);
 `;
 
 export type AssetKind = "image" | "html";
@@ -205,13 +205,8 @@ export class LibraryStore {
   constructor(homeOverride?: string) {
     this.paths = ensureRuntime(getRuntimePaths(homeOverride));
     this.db = new DatabaseSync(this.paths.db);
-    try {
-      this.initialize();
-      this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
-    } catch (error) {
-      this.db.close();
-      throw error;
-    }
+    this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
+    this.initialize();
   }
 
   close(): void {
@@ -251,46 +246,16 @@ export class LibraryStore {
   }
 
   private initialize(): void {
-    const tables = (db: DatabaseSync) => (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as DbRow[]).map((row) => String(row.name));
-    if (tables(this.db).length === 0) {
-      this.db.exec("BEGIN");
-      try {
-        this.db.exec(CURRENT_SCHEMA);
-        const insert = this.db.prepare("INSERT INTO forms (name, description, position) VALUES (?, ?, ?)");
-        DEFAULT_FORMS.forEach(([name, description], index) => insert.run(name, description, index + 1));
-        this.db.exec("COMMIT");
-      } catch (error) {
-        this.db.exec("ROLLBACK");
-        throw error;
-      }
-      return;
+    const formsExist = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'forms'").get();
+    this.db.exec(CURRENT_SCHEMA);
+    if (!formsExist) {
+      const insert = this.db.prepare("INSERT INTO forms (name, description, position) VALUES (?, ?, ?)");
+      DEFAULT_FORMS.forEach(([name, description], index) => insert.run(name, description, index + 1));
     }
-    // 用同一建库定义校验恢复输入；不修改或补建不符合当前格式的数据库。
-    const expected = new DatabaseSync(":memory:");
-    try {
-      expected.exec(CURRENT_SCHEMA);
-      const currentTables = tables(expected);
-      const columns = (db: DatabaseSync, table: string) => (db.prepare(`PRAGMA table_info(${table})`).all() as DbRow[]).map((row) => String(row.name)).sort().join(",");
-      if (tables(this.db).join(",") !== currentTables.join(",") || currentTables.some((table) => columns(this.db, table) !== columns(expected, table))) {
-        throw new Error("数据库不符合当前格式，请使用当前版本生成的完整备份恢复。");
-      }
-      for (const asset of this.db.prepare("SELECT storage_path, preview_path FROM assets").all() as DbRow[]) {
-        this.absolute(asset.storage_path);
-        if (asset.preview_path !== null) this.absolute(asset.preview_path);
-      }
-      const order = this.db.prepare("SELECT COUNT(*) AS total, COUNT(DISTINCT sort_order) AS unique_count FROM items").get() as DbRow;
-      if (Number(order.total) !== Number(order.unique_count)) throw new Error("数据库排序不符合当前格式，请使用已验证的完整备份恢复。");
-    } finally { expected.close(); }
   }
 
   private absolute(stored: unknown): string {
-    const value = String(stored);
-    const path = resolve(this.paths.home, value);
-    const within = relative(this.paths.home, path);
-    if (isAbsolute(value) || !within || within === ".." || within.startsWith(`..${sep}`)) {
-      throw new Error("数据库路径不符合当前格式，请使用已验证的完整备份恢复。");
-    }
-    return path;
+    return join(this.paths.home, String(stored));
   }
 
   private stored(path: string): string {
